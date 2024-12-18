@@ -20,6 +20,7 @@
 #include "files.hpp"
 #include "misc.hpp"
 #include "module.hpp"
+#include "solist.hpp"
 #include "zygisk.hpp"
 
 using namespace std;
@@ -551,13 +552,20 @@ void ZygiskContext::run_modules_pre() {
 
 void ZygiskContext::run_modules_post() {
     flags[POST_SPECIALIZE] = true;
+
+    size_t modules_unloaded = 0;
     for (const auto &m : modules) {
         if (flags[APP_SPECIALIZE]) {
             m.postAppSpecialize(args.app);
         } else if (flags[SERVER_FORK_AND_SPECIALIZE]) {
             m.postServerSpecialize(args.server);
         }
-        m.tryUnload();
+        if (m.tryUnload()) modules_unloaded++;
+    }
+
+    if (modules.size() > 0) {
+        LOGD("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
+        clean_trace("jit-cache-zygisk", modules.size(), modules_unloaded, true);
     }
 }
 
@@ -705,6 +713,37 @@ static void hook_register(dev_t dev, ino_t inode, const char *symbol, void *new_
     hook_register(DEV, INODE, SYM, (void *) new_##NAME, (void **) &old_##NAME)
 
 #define PLT_HOOK_REGISTER(DEV, INODE, NAME) PLT_HOOK_REGISTER_SYM(DEV, INODE, #NAME, NAME)
+
+void clean_trace(const char *path, size_t load, size_t unload, bool spoof_maps) {
+    LOGD("cleaning trace for path %s", path);
+
+    if (load > 0 || unload > 0) SoList::resetCounters(load, unload);
+    bool path_found = SoList::dropSoPath(path);
+    if (!path_found || !spoof_maps) return;
+
+    LOGD("spoofing virtual maps for %s", path);
+    // spoofing map names is futile in Android, we do it simply
+    // to avoid Zygisk detections based on string comparison
+    for (auto &map : lsplt::MapInfo::Scan()) {
+        if (strstr(map.path.c_str(), path)) {
+            void *addr = (void *) map.start;
+            size_t size = map.end - map.start;
+            void *copy = mmap(nullptr, size, PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+            if (copy == MAP_FAILED) {
+                LOGE("failed to backup block %s [%p, %p]", map.path.c_str(), addr,
+                     (void *) map.end);
+                continue;
+            }
+
+            if ((map.perms & PROT_READ) == 0) {
+                mprotect(addr, size, PROT_READ);
+            }
+            memcpy(copy, addr, size);
+            mremap(copy, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, addr);
+            mprotect(addr, size, map.perms);
+        }
+    }
+}
 
 void hook_functions() {
     default_new(plt_hook_list);
