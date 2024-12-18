@@ -1,20 +1,20 @@
-#include <sys/ptrace.h>
-#include <unistd.h>
-#include <sys/uio.h>
-#include <sys/auxv.h>
+#include <dlfcn.h>
 #include <elf.h>
 #include <link.h>
-#include <vector>
-#include <string>
-#include <sys/mman.h>
-#include <sys/wait.h>
-#include <cstdlib>
-#include <cstdio>
-#include <dlfcn.h>
 #include <signal.h>
+#include <sys/auxv.h>
+#include <sys/mman.h>
+#include <sys/ptrace.h>
 #include <sys/system_properties.h>
-#include <string>
+#include <sys/uio.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <cinttypes>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
 
 #include "utils.hpp"
 
@@ -38,8 +38,10 @@ bool inject_on_main(int pid, const char *lib_path) {
     while (true) {
         uintptr_t *buf;
         read_proc(pid, (uintptr_t) p, &buf, sizeof(buf));
-        if (buf != nullptr) ++p;
-        else break;
+        if (buf != nullptr)
+            ++p;
+        else
+            break;
     }
     ++p;
     auto auxv = reinterpret_cast<ElfW(auxv_t) *>(p);
@@ -53,8 +55,9 @@ bool inject_on_main(int pid, const char *lib_path) {
         if (buf.a_type == AT_ENTRY) {
             entry_addr = (uintptr_t) buf.a_un.a_val;
             addr_of_entry_addr = (uintptr_t) v + offsetof(ElfW(auxv_t), a_un);
-            LOGV("entry address %" PRIxPTR " %s (entry=%" PRIxPTR ", entry_addr=%" PRIxPTR ")", entry_addr,
-                 get_addr_mem_region(map, entry_addr).c_str(), (uintptr_t) v, addr_of_entry_addr);
+            LOGV("entry address %" PRIxPTR " %s (entry=%" PRIxPTR ", entry_addr=%" PRIxPTR ")",
+                 entry_addr, get_addr_mem_region(map, entry_addr).c_str(), (uintptr_t) v,
+                 addr_of_entry_addr);
             break;
         }
         if (buf.a_type == AT_NULL) break;
@@ -68,7 +71,8 @@ bool inject_on_main(int pid, const char *lib_path) {
     // Replace the program entry with an invalid address
     // For arm32 compatibility, we set the last bit to the same as the entry address
     uintptr_t break_addr = (-0x05ec1cff & ~1) | ((uintptr_t) entry_addr & 1);
-    if (!write_proc(pid, (uintptr_t) addr_of_entry_addr, &break_addr, sizeof(break_addr))) return false;
+    if (!write_proc(pid, (uintptr_t) addr_of_entry_addr, &break_addr, sizeof(break_addr)))
+        return false;
     ptrace(PTRACE_CONT, pid, 0, 0);
     int status;
     wait_for_trace(pid, &status, __WALL);
@@ -82,7 +86,8 @@ bool inject_on_main(int pid, const char *lib_path) {
         LOGD("stopped at entry");
 
         // restore entry address
-        if (!write_proc(pid, (uintptr_t) addr_of_entry_addr, &entry_addr, sizeof(entry_addr))) return false;
+        if (!write_proc(pid, (uintptr_t) addr_of_entry_addr, &entry_addr, sizeof(entry_addr)))
+            return false;
 
         // backup registers
         memcpy(&backup, &regs, sizeof(regs));
@@ -99,7 +104,8 @@ bool inject_on_main(int pid, const char *lib_path) {
         args.clear();
         args.push_back((long) str);
         args.push_back((long) RTLD_NOW);
-        auto remote_handle = remote_call(pid, regs, (uintptr_t) dlopen_addr, (uintptr_t) libc_return_addr, args);
+        auto remote_handle =
+            remote_call(pid, regs, (uintptr_t) dlopen_addr, (uintptr_t) libc_return_addr, args);
         LOGD("remote handle %p", (void *) remote_handle);
         if (remote_handle == 0) {
             LOGE("handle is null");
@@ -110,8 +116,9 @@ bool inject_on_main(int pid, const char *lib_path) {
                 return false;
             }
             args.clear();
-            auto dlerror_str_addr = remote_call(pid, regs, (uintptr_t) dlerror_addr, (uintptr_t) libc_return_addr, args);
-            LOGD("dlerror str %p", (void*) dlerror_str_addr);
+            auto dlerror_str_addr = remote_call(pid, regs, (uintptr_t) dlerror_addr,
+                                                (uintptr_t) libc_return_addr, args);
+            LOGD("dlerror str %p", (void *) dlerror_str_addr);
             if (dlerror_str_addr == 0) return false;
             auto strlen_addr = find_func_addr(local_map, map, "libc.so", "strlen");
             if (strlen_addr == nullptr) {
@@ -120,7 +127,8 @@ bool inject_on_main(int pid, const char *lib_path) {
             }
             args.clear();
             args.push_back(dlerror_str_addr);
-            auto dlerror_len = remote_call(pid, regs, (uintptr_t) strlen_addr, (uintptr_t) libc_return_addr, args);
+            auto dlerror_len =
+                remote_call(pid, regs, (uintptr_t) strlen_addr, (uintptr_t) libc_return_addr, args);
             if (dlerror_len <= 0) {
                 LOGE("dlerror len <= 0");
                 return false;
@@ -139,16 +147,33 @@ bool inject_on_main(int pid, const char *lib_path) {
         str = push_string(pid, regs, "entry");
         args.push_back(remote_handle);
         args.push_back((long) str);
-        auto injector_entry = remote_call(pid, regs, (uintptr_t) dlsym_addr, (uintptr_t) libc_return_addr, args);
-        LOGD("injector entry %p", (void*) injector_entry);
+        auto injector_entry =
+            remote_call(pid, regs, (uintptr_t) dlsym_addr, (uintptr_t) libc_return_addr, args);
+        LOGD("injector entry %p", (void *) injector_entry);
         if (injector_entry == 0) {
             LOGE("injector entry is null");
             return false;
         }
 
-        // call injector entry(handle, path)
+        // record the address range of libzygisk.so
+        map = MapInfo::Scan(std::to_string(pid));
+        void *start_addr = nullptr;
+        size_t block_size = 0;
+        for (auto &info : map) {
+            if (strstr(info.path.c_str(), "libzygisk.so")) {
+                void *addr = (void *) info.start;
+                if (start_addr == nullptr) start_addr = addr;
+                size_t size = info.end - info.start;
+                block_size += size;
+                LOGD("found block %s: [%p-%p] with size %zu", info.path.c_str(), addr,
+                     (void *) info.end, size);
+            }
+        }
+
+        // call injector entry(start_addr, block_size, path)
         args.clear();
-        args.push_back(remote_handle);
+        args.push_back((uintptr_t) start_addr);
+        args.push_back(block_size);
         str = push_string(pid, regs, zygiskd::GetTmpPath().c_str());
         args.push_back((long) str);
         remote_call(pid, regs, injector_entry, (uintptr_t) libc_return_addr, args);
@@ -166,15 +191,16 @@ bool inject_on_main(int pid, const char *lib_path) {
     return false;
 }
 
-#define STOPPED_WITH(sig, event) (WIFSTOPPED(status) && WSTOPSIG(status) == (sig) && (status >> 16) == (event))
+#define STOPPED_WITH(sig, event)                                                                   \
+    (WIFSTOPPED(status) && WSTOPSIG(status) == (sig) && (status >> 16) == (event))
 
 bool trace_zygote(int pid) {
     LOGI("start tracing %d", pid);
 #define WAIT_OR_DIE wait_for_trace(pid, &status, __WALL);
-#define CONT_OR_DIE \
-    if (ptrace(PTRACE_CONT, pid, 0, 0) == -1) { \
-        PLOGE("cont"); \
-        return false; \
+#define CONT_OR_DIE                                                                                \
+    if (ptrace(PTRACE_CONT, pid, 0, 0) == -1) {                                                    \
+        PLOGE("cont");                                                                             \
+        return false;                                                                              \
     }
     int status;
     LOGI("tracing %d (tracer %d)", pid, getpid());

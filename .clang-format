@@ -1,0 +1,18 @@
+---
+BasedOnStyle: Google
+IndentWidth: 4
+UseCRLF: false
+UseTab: false
+---
+Language: Cpp
+DerivePointerAlignment: true
+PointerAlignment: Right
+ColumnLimit: 100
+AlignEscapedNewlines: Right
+Cpp11BracedListStyle: true
+Standard: Latest
+IndentCaseLabels: false
+BreakStringLiterals: false
+IndentExternBlock: false
+AccessModifierOffset: -4
+SpaceAfterCStyleCast: true
