@@ -27,4 +27,5 @@ void entry(void *addr, size_t size, const char *path) {
 
     LOGI("Start hooking");
     hook_functions();
+    clean_trace(path, 1, 0, false);
 }
