@@ -3,17 +3,22 @@
 
 #include "files.hpp"
 #include "logging.h"
-#include "misc.hpp"
-#include "zygisk.hpp"
 
 using namespace std::string_view_literals;
 
 namespace {
-    constexpr auto MODULE_DIR = "/data/adb/modules";
-    constexpr auto KSU_OVERLAY_SOURCE = "KSU";
-    const std::vector<std::string> KSU_PARTITIONS{"/system", "/vendor", "/product", "/system_ext", "/odm", "/oem"};
+constexpr auto KSU_OVERLAY_SOURCE = "KSU";
+constexpr auto MODULE_DIR = "/data/adb/modules";
+constexpr auto PROP_FILE = "/data/adb/modules/zygisksu/module.prop";
+const std::vector<std::string> KSU_PARTITIONS{"/system",     "/vendor", "/product",
+                                              "/system_ext", "/odm",    "/oem"};
 
-    void lazy_unmount(const char* mountpoint) {
+void lazy_unmount(std::vector<std::string>& targets) {
+    sort(targets.begin(), targets.end(), std::greater<>());
+    targets.erase(unique(targets.begin(), targets.end()), targets.end());
+
+    for (auto& target : targets) {
+        auto mountpoint = target.data();
         if (umount2(mountpoint, MNT_DETACH) != -1) {
             LOGD("Unmounted (%s)", mountpoint);
         } else {
@@ -23,15 +28,16 @@ namespace {
         }
     }
 }
+}  // namespace
 
-void revert_unmount_ksu() {
+void revert_unmount_ksu(std::vector<mount_info>& mount_infos) {
     std::string ksu_loop;
-    std::vector<std::string> targets;
+    std::vector<std::string> targets = {PROP_FILE};
 
     // Unmount ksu module dir last
     targets.emplace_back(MODULE_DIR);
 
-    for (auto& info: parse_mount_info("self")) {
+    for (auto& info : mount_infos) {
         if (info.target == MODULE_DIR) {
             ksu_loop = info.source;
             continue;
@@ -41,9 +47,9 @@ void revert_unmount_ksu() {
             targets.emplace_back(info.target);
         }
         // Unmount ksu overlays
-        if (info.type == "overlay"
-            && info.source == KSU_OVERLAY_SOURCE
-            && std::find(KSU_PARTITIONS.begin(), KSU_PARTITIONS.end(), info.target) != KSU_PARTITIONS.end()) {
+        if (info.type == "overlay" && info.source == KSU_OVERLAY_SOURCE &&
+            std::find(KSU_PARTITIONS.begin(), KSU_PARTITIONS.end(), info.target) !=
+                KSU_PARTITIONS.end()) {
             targets.emplace_back(info.target);
         }
         // Unmount temp dir
@@ -51,7 +57,7 @@ void revert_unmount_ksu() {
             targets.emplace_back(info.target);
         }
     }
-    for (auto& info: parse_mount_info("self")) {
+    for (auto& info : mount_infos) {
         // Unmount everything from ksu loop except ksu module dir
         if (info.source == ksu_loop && info.target != MODULE_DIR) {
             targets.emplace_back(info.target);
@@ -59,19 +65,17 @@ void revert_unmount_ksu() {
     }
 
     // Do unmount
-    for (auto& s: reversed(targets)) {
-        lazy_unmount(s.data());
-    }
+    lazy_unmount(targets);
 }
 
-void revert_unmount_magisk() {
-    std::vector<std::string> targets;
+void revert_unmount_magisk(std::vector<mount_info>& mount_infos) {
+    std::vector<std::string> targets = {PROP_FILE};
 
     // Unmount dummy skeletons and MAGISKTMP
     // since mirror nodes are always mounted under skeleton, we don't have to specifically unmount
-    for (auto& info: parse_mount_info("self")) {
-        if (info.source == "magisk" || info.source == "worker" || // magisktmp tmpfs
-            info.root.starts_with("/adb/modules")) { // bind mount from data partition
+    for (auto& info : mount_infos) {
+        if (info.source == "magisk" || info.source == "worker" ||  // magisktmp tmpfs
+            info.root.starts_with("/adb/modules")) {               // bind mount from data partition
             targets.push_back(info.target);
         }
         // Unmount everything mounted to /data/adb
@@ -80,7 +84,5 @@ void revert_unmount_magisk() {
         }
     }
 
-    for (auto& s: reversed(targets)) {
-        lazy_unmount(s.data());
-    }
+    lazy_unmount(targets);
 }
