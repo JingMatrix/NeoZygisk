@@ -36,7 +36,7 @@ pub fn setup() {
 }
 
 pub fn get_impl() -> &'static RootImpl {
-    unsafe { &ROOT_IMPL }
+    unsafe { &*(&raw const ROOT_IMPL) }
 }
 
 pub fn uid_granted_root(uid: i32) -> bool {
