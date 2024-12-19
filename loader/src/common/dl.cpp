@@ -1,15 +1,13 @@
-#include <cstdio>
+#include "dl.h"
+
+#include <android/dlext.h>
 #include <dlfcn.h>
 #include <libgen.h>
-#include <climits>
-#include <cstring>
-#include <android/dlext.h>
 
-#include "dl.h"
 #include "logging.h"
 
 extern "C" [[gnu::weak]] struct android_namespace_t*
-//NOLINTNEXTLINE
+// NOLINTNEXTLINE
 __loader_android_create_namespace([[maybe_unused]] const char* name,
                                   [[maybe_unused]] const char* ld_library_path,
                                   [[maybe_unused]] const char* default_library_path,
@@ -21,11 +19,11 @@ __loader_android_create_namespace([[maybe_unused]] const char* name,
 void* DlopenExt(const char* path, int flags) {
     auto info = android_dlextinfo{};
     auto* dir = dirname(path);
-    auto* ns = &__loader_android_create_namespace == nullptr ? nullptr :
-               __loader_android_create_namespace(path, dir, nullptr,
-                                                 2, /* ANDROID_NAMESPACE_TYPE_SHARED */
-                                                 nullptr, nullptr,
-                                                 reinterpret_cast<void*>(&DlopenExt));
+    auto* ns = &__loader_android_create_namespace == nullptr
+                   ? nullptr
+                   : __loader_android_create_namespace(
+                         path, dir, nullptr, 2, /* ANDROID_NAMESPACE_TYPE_SHARED */
+                         nullptr, nullptr, reinterpret_cast<void*>(&DlopenExt));
     if (ns) {
         info.flags = ANDROID_DLEXT_USE_NAMESPACE;
         info.library_namespace = ns;
@@ -45,10 +43,13 @@ void* DlopenExt(const char* path, int flags) {
 }
 
 void* DlopenMem(int fd, int flags) {
-    auto info = android_dlextinfo{
-        .flags = ANDROID_DLEXT_USE_LIBRARY_FD,
-        .library_fd = fd
-    };
+    auto info = android_dlextinfo{.flags = ANDROID_DLEXT_USE_LIBRARY_FD,
+                                  .reserved_addr = nullptr,
+                                  .reserved_size = 0,
+                                  .relro_fd = 0,
+                                  .library_fd = fd,
+                                  .library_fd_offset = 0,
+                                  .library_namespace = nullptr};
 
     auto* handle = android_dlopen_ext("/jit-cache-zygisk", flags, &info);
     if (handle) {
