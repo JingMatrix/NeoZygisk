@@ -17,7 +17,6 @@
 #include "art_method.hpp"
 #include "daemon.h"
 #include "dl.h"
-#include "files.hpp"
 #include "misc.hpp"
 #include "module.hpp"
 #include "solist.hpp"
@@ -124,6 +123,7 @@ vector<tuple<dev_t, ino_t, const char *, void **>> *plt_hook_list;
 map<string, vector<JNINativeMethod>, StringCmp> *jni_hook_list;
 bool should_unmap_zygisk = false;
 std::vector<lsplt::MapInfo> cached_map_infos = {};
+std::vector<mount_info> cached_mount_infos = {};
 
 }  // namespace
 
@@ -144,12 +144,16 @@ DCL_HOOK_FUNC(int, unshare, int flags) {
         // This is reproducible on the official AVD running API 26 and 27.
         // Simply avoid doing any unmounts for SysUI to avoid potential issues.
         (g_ctx->info_flags & PROCESS_IS_SYS_UI) == 0) {
-        if (g_ctx->flags[DO_REVERT_UNMOUNT]) {
+        bool process_on_denylist = (g_ctx->info_flags & PROCESS_ON_DENYLIST) == PROCESS_ON_DENYLIST;
+        if (process_on_denylist || g_ctx->flags[DO_REVERT_UNMOUNT]) {
             if (g_ctx->info_flags & PROCESS_ROOT_IS_KSU) {
-                revert_unmount_ksu();
+                revert_unmount_ksu(cached_mount_infos);
             } else if (g_ctx->info_flags & PROCESS_ROOT_IS_MAGISK) {
-                revert_unmount_magisk();
+                revert_unmount_magisk(cached_mount_infos);
             }
+
+            // Clone new namespace to re-order mount IDs
+            old_unshare(CLONE_NEWNS);
         }
 
         /* Zygisksu changed: No umount app_process */
@@ -185,6 +189,7 @@ DCL_HOOK_FUNC(int, pthread_attr_setstacksize, void *target, size_t size) {
     if (should_unmap_zygisk) {
         unhook_functions();
         cached_map_infos.clear();
+        cached_mount_infos.clear();
         if (should_unmap_zygisk) {
             // Because both `pthread_attr_setstacksize` and `munmap` have the same function
             // signature, we can use `musttail` to let the compiler reuse our stack frame and thus
@@ -205,6 +210,8 @@ DCL_HOOK_FUNC(char *, strdup, const char *s) {
         initialize_jni_hook();
         cached_map_infos = lsplt::MapInfo::Scan();
         LOGD("cached_map_infos updated");
+        cached_mount_infos = parse_mount_info("self");
+        LOGD("cached_mount_infos updated");
     }
     return old_strdup(s);
 }
