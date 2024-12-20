@@ -53,7 +53,7 @@ androidComponents.onVariants { variant ->
         into(moduleDir)
         from("${rootProject.projectDir}/README.md")
         from("$projectDir/src") {
-            exclude("module.prop", "action.sh", "customize.sh", "post-fs-data.sh", "service.sh", "uninstall.sh", "zygisk-ctl.sh", "mazoku")
+            exclude("module.prop", "action.sh", "customize.sh", "post-fs-data.sh", "service.sh", "uninstall.sh", "zygisk-ctl.sh")
             filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
         }
         from("$projectDir/src") {
@@ -65,7 +65,6 @@ androidComponents.onVariants { variant ->
                 "versionCode" to verCode
             )
         }
-        from("$projectDir/src/mazoku")
         from("$projectDir/src") {
             include("action.sh", "customize.sh", "post-fs-data.sh", "service.sh", "uninstall.sh", "zygisk-ctl.sh")
             val tokens = mapOf(
@@ -87,100 +86,7 @@ androidComponents.onVariants { variant ->
             from(project(":loader").layout.buildDirectory.file("intermediates/stripped_native_libs/$variantLowered/strip${variantCapped}DebugSymbols/out/lib"))
         }
 
-        val root = moduleDir.get()
-
         doLast {
-            if (file("private_key").exists()) {
-                println("=== Guards the peace of Machikado ===")
-                val privateKey = file("private_key").readBytes()
-                val publicKey = file("public_key").readBytes()
-                val namedSpec = NamedParameterSpec("ed25519")
-                val privKeySpec = EdECPrivateKeySpec(namedSpec, privateKey)
-                val kf = KeyFactory.getInstance("ed25519")
-                val privKey = kf.generatePrivate(privKeySpec);
-                val sig = Signature.getInstance("ed25519")
-                fun File.sha(realFile: File? = null) {
-                    val path = this.path.replace("\\", "/")
-                    sig.update(this.name.toByteArray())
-                    sig.update(0) // null-terminated string
-                    val real = realFile ?: this
-                    val buffer = ByteBuffer.allocate(8)
-                        .order(ByteOrder.LITTLE_ENDIAN)
-                        .putLong(real.length())
-                        .array()
-                    sig.update(buffer)
-                    real.forEachBlock { bytes, size ->
-                        sig.update(bytes, 0, size)
-                    }
-                }
-
-                fun getSign(name: String, abi32: String, abi64: String) {
-                    val set = TreeSet<Pair<File, File?>> { o1, o2 ->
-                        o1.first.path.replace("\\", "/")
-                            .compareTo(o2.first.path.replace("\\", "/"))
-                    }
-                    set.add(Pair(root.file("module.prop").asFile, null))
-                    set.add(Pair(root.file("sepolicy.rule").asFile, null))
-                    set.add(Pair(root.file("post-fs-data.sh").asFile, null))
-                    set.add(Pair(root.file("service.sh").asFile, null))
-                    set.add(Pair(root.file("mazoku").asFile, null))
-                    set.add(
-                        Pair(
-                            root.file("lib/libzygisk.so").asFile,
-                            root.file("lib/$abi32/libzygisk.so").asFile
-                        )
-                    )
-                    set.add(
-                        Pair(
-                            root.file("lib64/libzygisk.so").asFile,
-                            root.file("lib/$abi64/libzygisk.so").asFile
-                        )
-                    )
-                    set.add(
-                        Pair(
-                            root.file("bin/zygisk-ptrace32").asFile,
-                            root.file("lib/$abi32/libzygisk_ptrace.so").asFile
-                        )
-                    )
-                    set.add(
-                        Pair(
-                            root.file("bin/zygisk-ptrace64").asFile,
-                            root.file("lib/$abi64/libzygisk_ptrace.so").asFile
-                        )
-                    )
-                    set.add(
-                        Pair(
-                            root.file("bin/zygiskd32").asFile,
-                            root.file("bin/$abi32/zygiskd").asFile
-                        )
-                    )
-                    set.add(
-                        Pair(
-                            root.file("bin/zygiskd64").asFile,
-                            root.file("bin/$abi64/zygiskd").asFile
-                        )
-                    )
-                    set.add(
-                        Pair(
-                            root.file("bin/zygisk-ctl").asFile,
-                            root.file("zygisk-ctl.sh").asFile
-                        )
-                    )
-                    sig.initSign(privKey)
-                    set.forEach { it.first.sha(it.second) }
-                    val signFile = root.file(name).asFile
-                    signFile.writeBytes(sig.sign())
-                    signFile.appendBytes(publicKey)
-                }
-
-                getSign("machikado.arm", "armeabi-v7a", "arm64-v8a")
-                getSign("machikado.x86", "x86", "x86_64")
-            } else {
-                println("no private_key found, this build will not be signed")
-                root.file("machikado.arm").asFile.createNewFile()
-                root.file("machikado.x86").asFile.createNewFile()
-            }
-
             fileTree(moduleDir).visit {
                 if (isDirectory) return@visit
                 val md = MessageDigest.getInstance("SHA-256")
