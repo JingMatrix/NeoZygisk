@@ -54,16 +54,23 @@ pub fn main() -> Result<()> {
             root_impl::RootImpl::KernelSU | root_impl::RootImpl::Magisk => {
                 msg.extend_from_slice(&constants::DAEMON_SET_INFO.to_le_bytes());
                 let module_names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
-                format!(
-                    "Root: {:?},module({}): {}",
-                    root_impl::get_impl(),
-                    modules.len(),
-                    module_names.join(",")
-                )
+                if module_names.len() > 0 {
+                    format!(
+                        "\t\tRoot: {:?}\n\t\tModule({}):\n\t\t\t{}",
+                        root_impl::get_impl(),
+                        modules.len(),
+                        module_names.join("\n\t\t\t")
+                    )
+                } else {
+                    format!("\t\tRoot: {:?}", root_impl::get_impl())
+                }
             }
             _ => {
                 msg.extend_from_slice(&constants::DAEMON_SET_ERROR_INFO.to_le_bytes());
-                format!("Invalid root implementation: {:?}", root_impl::get_impl())
+                format!(
+                    "\t\tInvalid root implementation: {:?}",
+                    root_impl::get_impl()
+                )
             }
         };
         msg.extend_from_slice(&(info.len() as u32 + 1).to_le_bytes());

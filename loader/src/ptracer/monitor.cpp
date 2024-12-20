@@ -1,39 +1,31 @@
-#include <sys/system_properties.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <map>
-#include <set>
-#include <syscall.h>
 #include <dirent.h>
-#include <sys/stat.h>
-#include <sys/signalfd.h>
 #include <err.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/epoll.h>
-#include <sys/wait.h>
-#include <sys/mount.h>
-#include <time.h>
 #include <fcntl.h>
+#include <sys/epoll.h>
+#include <sys/mount.h>
+#include <sys/signalfd.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/system_properties.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <syscall.h>
+#include <time.h>
+#include <unistd.h>
 
+#include <set>
+
+#include "files.hpp"
 #include "main.hpp"
 #include "utils.hpp"
-#include "files.hpp"
-#include "misc.hpp"
 
 using namespace std::string_view_literals;
-
 
 #define STOPPED_WITH(sig, event) WIFSTOPPED(status) && (status >> 8 == ((sig) | (event << 8)))
 
 static void updateStatus();
 
-enum TracingState {
-    TRACING = 1,
-    STOPPING,
-    STOPPED,
-    EXITING
-};
+enum TracingState { TRACING = 1, STOPPING, STOPPED, EXITING };
 
 std::string monitor_stop_reason;
 
@@ -43,13 +35,14 @@ struct EventLoop;
 
 struct EventHandler {
     virtual int GetFd() = 0;
-    virtual void HandleEvent(EventLoop& loop, uint32_t event) = 0;
+    virtual void HandleEvent(EventLoop &loop, uint32_t event) = 0;
 };
 
 struct EventLoop {
 private:
     int epoll_fd_;
     bool running = false;
+
 public:
     bool Init() {
         epoll_fd_ = epoll_create(1);
@@ -60,9 +53,7 @@ public:
         return true;
     }
 
-    void Stop() {
-        running = false;
-    }
+    void Stop() { running = false; }
 
     void Loop() {
         running = true;
@@ -71,20 +62,19 @@ public:
         while (running) {
             int nfds = epoll_wait(epoll_fd_, events, MAX_EVENTS, -1);
             if (nfds == -1) {
-                if (errno != EINTR)
-                    PLOGE("epoll_wait");
+                if (errno != EINTR) PLOGE("epoll_wait");
                 continue;
             }
             for (int i = 0; i < nfds; i++) {
-                reinterpret_cast<EventHandler *>(events[i].data.ptr)->HandleEvent(*this,
-                                                                                  events[i].events);
+                reinterpret_cast<EventHandler *>(events[i].data.ptr)
+                    ->HandleEvent(*this, events[i].events);
                 if (!running) break;
             }
         }
     }
 
     bool RegisterHandler(EventHandler &handler, uint32_t events) {
-        struct epoll_event ev{};
+        struct epoll_event ev {};
         ev.events = events;
         ev.data.ptr = &handler;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, handler.GetFd(), &ev) == -1) {
@@ -110,7 +100,6 @@ public:
 static TracingState tracing_state = TRACING;
 static std::string prop_path;
 
-
 struct Status {
     bool supported = false;
     bool zygote_injected = false;
@@ -132,9 +121,8 @@ struct SocketHandler : public EventHandler {
             PLOGE("socket create");
             return false;
         }
-        struct sockaddr_un addr{
-                .sun_family = AF_UNIX,
-                .sun_path={0},
+        struct sockaddr_un addr {
+            .sun_family = AF_UNIX, .sun_path = {0},
         };
         sprintf(addr.sun_path, "%s/%s", zygiskd::GetTmpPath().c_str(), SOCKET_NAME);
         socklen_t socklen = sizeof(sa_family_t) + strlen(addr.sun_path);
@@ -145,9 +133,7 @@ struct SocketHandler : public EventHandler {
         return true;
     }
 
-    int GetFd() override {
-        return sock_fd_;
-    }
+    int GetFd() override { return sock_fd_; }
 
     void HandleEvent(EventLoop &loop, uint32_t) override {
         struct [[gnu::packed]] MsgHead {
@@ -158,7 +144,7 @@ struct SocketHandler : public EventHandler {
         for (;;) {
             std::vector<uint8_t> buf;
             buf.resize(sizeof(MsgHead), 0);
-            MsgHead &msg = *reinterpret_cast<MsgHead*>(buf.data());
+            MsgHead &msg = *reinterpret_cast<MsgHead *>(buf.data());
             ssize_t real_size;
             auto nread = recv(sock_fd_, &msg, sizeof(msg), MSG_PEEK);
             if (nread == -1) {
@@ -171,7 +157,8 @@ struct SocketHandler : public EventHandler {
                 LOGE("read %zu < %zu", nread, sizeof(Command));
                 continue;
             }
-            if (msg.cmd >= Command::DAEMON64_SET_INFO && msg.cmd != Command::SYSTEM_SERVER_STARTED) {
+            if (msg.cmd >= Command::DAEMON64_SET_INFO &&
+                msg.cmd != Command::SYSTEM_SERVER_STARTED) {
                 if (nread != sizeof(msg)) {
                     LOGE("cmd %d size %zu != %zu", msg.cmd, nread, sizeof(MsgHead));
                     continue;
@@ -198,68 +185,65 @@ struct SocketHandler : public EventHandler {
                 continue;
             }
             switch (msg.cmd) {
-                case START:
-                    if (tracing_state == STOPPING) {
-                        tracing_state = TRACING;
-                    } else if (tracing_state == STOPPED) {
-                        ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
-                        LOGI("start tracing init");
-                        tracing_state = TRACING;
-                    }
-                    updateStatus();
-                    break;
-                case STOP:
-                    if (tracing_state == TRACING) {
-                        LOGI("stop tracing requested");
-                        tracing_state = STOPPING;
-                        monitor_stop_reason = "user requested";
-                        ptrace(PTRACE_INTERRUPT, 1, 0, 0);
-                        updateStatus();
-                    }
-                    break;
-                case EXIT:
-                    LOGI("prepare for exit ...");
-                    tracing_state = EXITING;
+            case START:
+                if (tracing_state == STOPPING) {
+                    tracing_state = TRACING;
+                } else if (tracing_state == STOPPED) {
+                    ptrace(PTRACE_SEIZE, 1, 0, PTRACE_O_TRACEFORK);
+                    LOGI("start tracing init");
+                    tracing_state = TRACING;
+                }
+                updateStatus();
+                break;
+            case STOP:
+                if (tracing_state == TRACING) {
+                    LOGI("stop tracing requested");
+                    tracing_state = STOPPING;
                     monitor_stop_reason = "user requested";
+                    ptrace(PTRACE_INTERRUPT, 1, 0, 0);
                     updateStatus();
-                    loop.Stop();
-                    break;
-                case ZYGOTE64_INJECTED:
-                    status64.zygote_injected = true;
-                    updateStatus();
-                    break;
-                case ZYGOTE32_INJECTED:
-                    status32.zygote_injected = true;
-                    updateStatus();
-                    break;
-                case DAEMON64_SET_INFO:
-                    LOGD("received daemon64 info %s", msg.data);
-                    status64.daemon_info = std::string(msg.data);
-                    updateStatus();
-                    break;
-                case DAEMON32_SET_INFO:
-                    LOGD("received daemon32 info %s", msg.data);
-                    status32.daemon_info = std::string(msg.data);
-                    updateStatus();
-                    break;
-                case DAEMON64_SET_ERROR_INFO:
-                    LOGD("received daemon64 error info %s", msg.data);
-                    status64.daemon_running = false;
-                    status64.daemon_error_info = std::string(msg.data);
-                    updateStatus();
-                    break;
-                case DAEMON32_SET_ERROR_INFO:
-                    LOGD("received daemon32 error info %s", msg.data);
-                    status32.daemon_running = false;
-                    status32.daemon_error_info = std::string(msg.data);
-                    updateStatus();
-                    break;
-                case SYSTEM_SERVER_STARTED:
-                    LOGD("system server started, mounting prop");
-                    if (mount(prop_path.c_str(), "/data/adb/modules/zygisksu/module.prop", nullptr, MS_BIND, nullptr) == -1) {
-                        PLOGE("failed to mount prop");
-                    }
-                    break;
+                }
+                break;
+            case EXIT:
+                LOGI("prepare for exit ...");
+                tracing_state = EXITING;
+                monitor_stop_reason = "user requested";
+                updateStatus();
+                loop.Stop();
+                break;
+            case ZYGOTE64_INJECTED:
+                status64.zygote_injected = true;
+                updateStatus();
+                break;
+            case ZYGOTE32_INJECTED:
+                status32.zygote_injected = true;
+                updateStatus();
+                break;
+            case DAEMON64_SET_INFO:
+                LOGD("received daemon64 info %s", msg.data);
+                status64.daemon_info = std::string(msg.data);
+                updateStatus();
+                break;
+            case DAEMON32_SET_INFO:
+                LOGD("received daemon32 info %s", msg.data);
+                status32.daemon_info = std::string(msg.data);
+                updateStatus();
+                break;
+            case DAEMON64_SET_ERROR_INFO:
+                LOGD("received daemon64 error info %s", msg.data);
+                status64.daemon_running = false;
+                status64.daemon_error_info = std::string(msg.data);
+                updateStatus();
+                break;
+            case DAEMON32_SET_ERROR_INFO:
+                LOGD("received daemon32 error info %s", msg.data);
+                status32.daemon_running = false;
+                status32.daemon_error_info = std::string(msg.data);
+                updateStatus();
+                break;
+            case SYSTEM_SERVER_STARTED:
+                LOGD("system server started, module.prop updated");
+                break;
             }
         }
     }
@@ -271,30 +255,28 @@ struct SocketHandler : public EventHandler {
 
 constexpr auto MAX_RETRY_COUNT = 5;
 
-#define CREATE_ZYGOTE_START_COUNTER(abi) \
-struct timespec last_zygote##abi{.tv_sec = 0, .tv_nsec = 0}; \
-int count_zygote##abi = 0; \
-bool should_stop_inject##abi() { \
-    struct timespec now{}; \
-    clock_gettime(CLOCK_MONOTONIC, &now); \
-    if (now.tv_sec - last_zygote##abi.tv_sec < 30) { \
-        count_zygote##abi++; \
-    } else { \
-        count_zygote##abi = 0; \
-    } \
-    last_zygote##abi = now; \
-    return count_zygote##abi >= MAX_RETRY_COUNT; \
-}
+#define CREATE_ZYGOTE_START_COUNTER(abi)                                                           \
+    struct timespec last_zygote##abi {                                                             \
+        .tv_sec = 0, .tv_nsec = 0                                                                  \
+    };                                                                                             \
+    int count_zygote##abi = 0;                                                                     \
+    bool should_stop_inject##abi() {                                                               \
+        struct timespec now {};                                                                    \
+        clock_gettime(CLOCK_MONOTONIC, &now);                                                      \
+        if (now.tv_sec - last_zygote##abi.tv_sec < 30) {                                           \
+            count_zygote##abi++;                                                                   \
+        } else {                                                                                   \
+            count_zygote##abi = 0;                                                                 \
+        }                                                                                          \
+        last_zygote##abi = now;                                                                    \
+        return count_zygote##abi >= MAX_RETRY_COUNT;                                               \
+    }
 
 CREATE_ZYGOTE_START_COUNTER(64)
 CREATE_ZYGOTE_START_COUNTER(32)
 
 static bool ensure_daemon_created(bool is_64bit) {
     auto &status = is_64bit ? status64 : status32;
-    if (is_64bit) {
-        LOGD("new zygote started, unmounting prop ...");
-        umount2("/data/adb/modules/zygisksu/module.prop", MNT_DETACH);
-    }
     status.zygote_injected = false;
     if (status.daemon_pid == -1) {
         auto pid = fork();
@@ -324,6 +306,7 @@ private:
     struct signalfd_siginfo fdsi;
     int status;
     std::set<pid_t> process;
+
 public:
     bool Init() {
         sigset_t mask;
@@ -342,9 +325,7 @@ public:
         return true;
     }
 
-    int GetFd() override {
-        return signal_fd_;
-    }
+    int GetFd() override { return signal_fd_; }
 
     void HandleEvent(EventLoop &, uint32_t) override {
         for (;;) {
@@ -375,15 +356,15 @@ public:
                         LOGV("forked %ld", child_pid);
                     } else if (STOPPED_WITH(SIGTRAP, PTRACE_EVENT_STOP) &&
                                tracing_state == STOPPING) {
-                        if (ptrace(PTRACE_DETACH, 1, 0, 0) == -1)
-                            PLOGE("failed to detach init");
+                        if (ptrace(PTRACE_DETACH, 1, 0, 0) == -1) PLOGE("failed to detach init");
                         tracing_state = STOPPED;
                         LOGI("stop tracing init");
                         continue;
                     }
                     if (WIFSTOPPED(status)) {
                         if (WPTEVENT(status) == 0) {
-                            if (WSTOPSIG(status) != SIGSTOP && WSTOPSIG(status) != SIGTSTP && WSTOPSIG(status) != SIGTTIN && WSTOPSIG(status) != SIGTTOU) {
+                            if (WSTOPSIG(status) != SIGSTOP && WSTOPSIG(status) != SIGTSTP &&
+                                WSTOPSIG(status) != SIGTTIN && WSTOPSIG(status) != SIGTTOU) {
                                 LOGW("inject signal sent to init: %s %d",
                                      sigabbrev_np(WSTOPSIG(status)), WSTOPSIG(status));
                                 ptrace(PTRACE_CONT, pid, 0, WSTOPSIG(status));
@@ -397,17 +378,17 @@ public:
                     }
                     continue;
                 }
-#define CHECK_DAEMON_EXIT(abi) \
-                if (status##abi.supported && pid == status64.daemon_pid) { \
-                    auto status_str = parse_status(status); \
-                    LOGW("daemon" #abi "pid %d exited: %s", pid, status_str.c_str()); \
-                    status##abi.daemon_running = false; \
-                    if (status##abi.daemon_error_info.empty()) { \
-                        status##abi.daemon_error_info = status_str; \
-                    } \
-                    updateStatus(); \
-                    continue; \
-                }
+#define CHECK_DAEMON_EXIT(abi)                                                                     \
+    if (status##abi.supported && pid == status64.daemon_pid) {                                     \
+        auto status_str = parse_status(status);                                                    \
+        LOGW("daemon" #abi "pid %d exited: %s", pid, status_str.c_str());                          \
+        status##abi.daemon_running = false;                                                        \
+        if (status##abi.daemon_error_info.empty()) {                                               \
+            status##abi.daemon_error_info = status_str;                                            \
+        }                                                                                          \
+        updateStatus();                                                                            \
+        continue;                                                                                  \
+    }
                 CHECK_DAEMON_EXIT(64)
                 CHECK_DAEMON_EXIT(32)
                 auto state = process.find(pid);
@@ -421,30 +402,30 @@ public:
                     if (STOPPED_WITH(SIGTRAP, PTRACE_EVENT_EXEC)) {
                         auto program = get_program(pid);
                         LOGV("%d program %s", pid, program.c_str());
-                        const char* tracer = nullptr;
+                        const char *tracer = nullptr;
                         do {
                             if (tracing_state != TRACING) {
                                 LOGW("stop injecting %d because not tracing", pid);
                                 break;
                             }
-#define PRE_INJECT(abi, is_64) \
-                            if (program == "/system/bin/app_process"#abi) { \
-                                tracer = "./bin/zygisk-ptrace"#abi; \
-                                if (should_stop_inject##abi()) { \
-                                    LOGW("zygote" #abi " restart too much times, stop injecting"); \
-                                    tracing_state = STOPPING; \
-                                    monitor_stop_reason = "zygote crashed"; \
-                                    ptrace(PTRACE_INTERRUPT, 1, 0, 0); \
-                                    break; \
-                                } \
-                                if (!ensure_daemon_created(is_64)) { \
-                                    LOGW("daemon" #abi " not running, stop injecting"); \
-                                    tracing_state = STOPPING; \
-                                    monitor_stop_reason = "daemon not running"; \
-                                    ptrace(PTRACE_INTERRUPT, 1, 0, 0); \
-                                    break; \
-                                } \
-                            }
+#define PRE_INJECT(abi, is_64)                                                                     \
+    if (program == "/system/bin/app_process" #abi) {                                               \
+        tracer = "./bin/zygisk-ptrace" #abi;                                                       \
+        if (should_stop_inject##abi()) {                                                           \
+            LOGW("zygote" #abi " restart too much times, stop injecting");                         \
+            tracing_state = STOPPING;                                                              \
+            monitor_stop_reason = "zygote crashed";                                                \
+            ptrace(PTRACE_INTERRUPT, 1, 0, 0);                                                     \
+            break;                                                                                 \
+        }                                                                                          \
+        if (!ensure_daemon_created(is_64)) {                                                       \
+            LOGW("daemon" #abi " not running, stop injecting");                                    \
+            tracing_state = STOPPING;                                                              \
+            monitor_stop_reason = "daemon not running";                                            \
+            ptrace(PTRACE_INTERRUPT, 1, 0, 0);                                                     \
+            break;                                                                                 \
+        }                                                                                          \
+    }
                             PRE_INJECT(64, true)
                             PRE_INJECT(32, false)
                             if (tracer != nullptr) {
@@ -495,52 +476,56 @@ static std::string post_section;
 
 static void updateStatus() {
     auto prop = xopen_file(prop_path.c_str(), "w");
-    std::string status_text = "monitor:";
+    std::string status_text = "\tmonitor:\t\t";
     switch (tracing_state) {
-        case TRACING:
-            status_text += "😋tracing";
-            break;
-        case STOPPING:
-            [[fallthrough]];
-        case STOPPED:
-            status_text += "❌stopped";
-            break;
-        case EXITING:
-            status_text += "❌exited";
-            break;
+    case TRACING:
+        status_text += "😋 tracing";
+        break;
+    case STOPPING:
+        [[fallthrough]];
+    case STOPPED:
+        status_text += "❌ stopped";
+        break;
+    case EXITING:
+        status_text += "❌ exited";
+        break;
     }
     if (tracing_state != TRACING && !monitor_stop_reason.empty()) {
         status_text += "(";
         status_text += monitor_stop_reason;
         status_text += ")";
     }
-    status_text += ",";
-#define WRITE_STATUS_ABI(suffix) \
-    if (status##suffix.supported) { \
-        status_text += " zygote" #suffix ":"; \
-        if (tracing_state != TRACING) status_text += "❓unknown,"; \
-        else if (status##suffix.zygote_injected) status_text += "😋injected,"; \
-        else status_text += "❌not injected,"; \
-        status_text += " daemon" #suffix ":"; \
-        if (status##suffix.daemon_running) {  \
-            status_text += "😋running";       \
-            if (!status##suffix.daemon_info.empty()) { \
-                status_text += "("; \
-                status_text += status##suffix.daemon_info; \
-                status_text += ")"; \
-            } \
-        } else { \
-            status_text += "❌crashed"; \
-            if (!status##suffix.daemon_error_info.empty()) { \
-                status_text += "("; \
-                status_text += status##suffix.daemon_error_info; \
-                status_text += ")"; \
-            } \
-        } \
+    status_text += "\n\n";
+#define WRITE_STATUS_ABI(suffix)                                                                   \
+    if (status##suffix.supported) {                                                                \
+        status_text += "\tzygote" #suffix ":";                                                     \
+        if (tracing_state != TRACING)                                                              \
+            status_text += "\t❓ unknown";                                                         \
+        else if (status##suffix.zygote_injected)                                                   \
+            status_text += "\t😋 injected";                                                        \
+        else                                                                                       \
+            status_text += "\t❌ not injected";                                                    \
+        status_text += "\n\tdaemon" #suffix ":";                                                   \
+        if (status##suffix.daemon_running) {                                                       \
+            status_text += "\t😋 running";                                                         \
+            if (!status##suffix.daemon_info.empty()) {                                             \
+                status_text += "\n";                                                               \
+                status_text += status##suffix.daemon_info;                                         \
+            }                                                                                      \
+        } else {                                                                                   \
+            status_text += "\t❌ crashed";                                                         \
+            if (!status##suffix.daemon_error_info.empty()) {                                       \
+                status_text += "(";                                                                \
+                status_text += status##suffix.daemon_error_info;                                   \
+                status_text += ")";                                                                \
+            }                                                                                      \
+        }                                                                                          \
     }
     WRITE_STATUS_ABI(64)
+    status_text += "\n\n";
     WRITE_STATUS_ABI(32)
-    fprintf(prop.get(), "%s[%s] %s", pre_section.c_str(), status_text.c_str(), post_section.c_str());
+    fprintf(prop.get(), "%s\n%s\n\n%s", pre_section.c_str(), status_text.c_str(),
+            post_section.c_str());
 }
 
 static bool prepare_environment() {
@@ -555,12 +540,13 @@ static bool prepare_environment() {
     file_readline(false, orig_prop.get(), [&](std::string_view line) -> bool {
         if (line.starts_with("description=")) {
             post = true;
-            pre_section += "description=";
             post_section += line.substr(sizeof("description"));
         } else {
             if (post) {
+                post_section += "\t";
                 post_section += line;
             } else {
+                pre_section += "\t";
                 pre_section += line;
             }
         }
@@ -591,9 +577,8 @@ void init_monitor() {
 void send_control_command(Command cmd) {
     int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (sockfd == -1) err(EXIT_FAILURE, "socket");
-    struct sockaddr_un addr{
-            .sun_family = AF_UNIX,
-            .sun_path={0},
+    struct sockaddr_un addr {
+        .sun_family = AF_UNIX, .sun_path = {0},
     };
     sprintf(addr.sun_path, "%s/%s", zygiskd::GetTmpPath().c_str(), SOCKET_NAME);
     socklen_t socklen = sizeof(sa_family_t) + strlen(addr.sun_path);
