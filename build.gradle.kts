@@ -27,6 +27,7 @@ val minKsuVersion by extra(10940)
 val minKsudVersion by extra(11425)
 val maxKsuVersion by extra(20000)
 val minMagiskVersion by extra(26402)
+val workDirectory by extra("/data/adb/neozygisk")
 
 val androidMinSdkVersion by extra(26)
 val androidTargetSdkVersion by extra(35)
