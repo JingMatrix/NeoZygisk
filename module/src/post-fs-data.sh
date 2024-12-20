@@ -26,8 +26,11 @@ create_sys_perm() {
   chcon u:object_r:system_file:s0 $1
 }
 
-export TMP_PATH=/sbin
-[ -d /sbin ] || export TMP_PATH=/debug_ramdisk
+export TMP_PATH=@WORK_DIRECTORY@
+
+if [ -d $TMP_PATH ]; then
+  rm -rf $TMP_PATH
+fi
 
 create_sys_perm $TMP_PATH
 
