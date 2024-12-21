@@ -248,8 +248,12 @@ fn handle_daemon_action(
         DaemonSocketAction::GetProcessFlags => {
             let uid = stream.read_u32()? as i32;
             let mut flags = ProcessFlags::empty();
-            if root_impl::uid_is_manager(uid) {
+            if root_impl::uid_is_systemui(uid) {
+                flags |= ProcessFlags::PROCESS_IS_SYS_UI;
+                trace!("Uid {} is systemui", uid,);
+            } else if root_impl::uid_is_manager(uid) {
                 flags |= ProcessFlags::PROCESS_IS_MANAGER;
+                trace!("Uid {} is manager", uid,);
             } else {
                 if root_impl::uid_granted_root(uid) {
                     flags |= ProcessFlags::PROCESS_GRANTED_ROOT;

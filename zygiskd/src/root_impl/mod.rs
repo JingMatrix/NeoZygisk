@@ -62,3 +62,10 @@ pub fn uid_is_manager(uid: i32) -> bool {
         _ => panic!("uid_is_manager: unknown root impl {:?}", get_impl()),
     }
 }
+
+pub fn uid_is_systemui(uid: i32) -> bool {
+    if let Ok(s) = rustix::fs::stat("/data/user_de/0/com.android.systemui") {
+        return s.st_uid == uid as u32;
+    }
+    false
+}
