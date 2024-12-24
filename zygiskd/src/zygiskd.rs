@@ -1,5 +1,5 @@
 use crate::constants::{DaemonSocketAction, ProcessFlags};
-use crate::utils::{check_unix_socket, LateInit, UnixStreamExt};
+use crate::utils::{check_unix_socket, get_clean_mount_namespace, LateInit, UnixStreamExt};
 use crate::{constants, lp_select, root_impl, utils};
 use anyhow::{bail, Result};
 use log::{debug, error, info, trace, warn};
@@ -270,6 +270,12 @@ fn handle_daemon_action(
             );
             stream.write_u32(flags.bits())?;
         }
+        DaemonSocketAction::GetCleanMountNamespace => {
+            let pid = stream.read_u32()?;
+            stream.write_u32(unsafe { libc::getpid() } as u32)?;
+            let fd = get_clean_mount_namespace(pid);
+            stream.write_u8(fd)?;
+        }
         DaemonSocketAction::ReadModules => {
             stream.write_usize(context.modules.len())?;
             for module in context.modules.iter() {
@@ -291,17 +297,17 @@ fn handle_daemon_action(
                 match spawn_companion(&module.name, module.lib_fd.as_raw_fd()) {
                     Ok(c) => {
                         if c.is_some() {
-                            trace!("  Spawned companion for `{}`", module.name);
+                            trace!("Spawned companion for `{}`", module.name);
                         } else {
                             trace!(
-                                "  No companion spawned for `{}` because it has not entry",
+                                "No companion spawned for `{}` because it has not entry",
                                 module.name
                             );
                         }
                         *companion = Some(c);
                     }
                     Err(e) => {
-                        warn!("  Failed to spawn companion for `{}`: {}", module.name, e);
+                        warn!("Failed to spawn companion for `{}`: {}", module.name, e);
                     }
                 };
             }

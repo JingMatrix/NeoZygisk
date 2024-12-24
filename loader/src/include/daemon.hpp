@@ -58,6 +58,7 @@ struct Module {
 enum class SocketAction {
     PingHeartBeat,
     GetProcessFlags,
+    GetCleanMountNamespace,
     ReadModules,
     RequestCompanionSocket,
     GetModuleDir,
@@ -74,6 +75,8 @@ bool PingHeartbeat();
 std::vector<Module> ReadModules();
 
 uint32_t GetProcessFlags(uid_t uid);
+
+std::string GetCleanMountNamespace(pid_t pid);
 
 int ConnectCompanion(size_t index);
 

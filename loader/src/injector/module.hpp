@@ -261,7 +261,7 @@ struct ZygiskContext {
     const char *process;
     std::list<ZygiskModule> modules;
 
-    int pid;
+    pid_t pid;
     uint32_t flags;
     uint32_t info_flags;
     std::bitset<MAX_FD_SIZE> allowed_fds;

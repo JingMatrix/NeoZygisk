@@ -108,11 +108,13 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
         // Simply avoid doing any unmounts for SysUI to avoid potential issues.
         (g_ctx->info_flags & PROCESS_IS_SYS_UI) == 0) {
         if (g_ctx->flags & DO_REVERT_UNMOUNT) {
-            if (g_ctx->info_flags & PROCESS_ROOT_IS_KSU) {
-                revert_unmount_ksu();
-            } else if (g_ctx->info_flags & PROCESS_ROOT_IS_MAGISK) {
-                revert_unmount_magisk();
+            if (!clean_mnt_ns(g_ctx->pid)) {
+                unmount_root(g_ctx->flags, false);
+                // Creat new namespace to avoid mount ID gaps
+                old_unshare(CLONE_NEWNS);
             }
+        } else if ((g_ctx->flags & PROCESS_GRANTED_ROOT) != PROCESS_GRANTED_ROOT) {
+            unmount_root(g_ctx->flags, true);
         }
         // Restore errno back to 0
         errno = 0;

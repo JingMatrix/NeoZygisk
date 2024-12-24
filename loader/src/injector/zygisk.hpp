@@ -1,12 +1,13 @@
 #pragma once
 
 #include <jni.h>
+#include <sys/types.h>
 
 void hook_entry(void *start_addr, size_t block_size);
 
-void revert_unmount_ksu();
+bool clean_mnt_ns(pid_t pid);
 
-void revert_unmount_magisk();
+void unmount_root(uint32_t flags, bool skip_modules = true);
 
 void hookJniNativeMethods(JNIEnv *env, const char *clz, JNINativeMethod *methods, int numMethods);
 

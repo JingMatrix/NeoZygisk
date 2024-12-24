@@ -7,7 +7,7 @@ use rustix::path::Arg;
 use rustix::thread::gettid;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::net::{UnixListener};
+use std::os::unix::net::UnixListener;
 use std::process::Command;
 use std::sync::OnceLock;
 use std::{
@@ -142,6 +142,10 @@ pub fn switch_mount_namespace(pid: i32) -> Result<()> {
     rustix::thread::move_into_link_name_space(mnt.as_fd(), None)?;
     std::env::set_current_dir(cwd)?;
     Ok(())
+}
+
+pub fn get_clean_mount_namespace(_pid: u32) -> u8 {
+    0
 }
 
 pub trait UnixStreamExt {

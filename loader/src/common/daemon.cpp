@@ -4,8 +4,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "socket_utils.hpp"
 #include "logging.hpp"
+#include "socket_utils.hpp"
 
 namespace zygiskd {
 static std::string TMP_PATH;
@@ -54,6 +54,20 @@ uint32_t GetProcessFlags(uid_t uid) {
     socket_utils::write_u8(fd, (uint8_t) SocketAction::GetProcessFlags);
     socket_utils::write_u32(fd, uid);
     return socket_utils::read_u32(fd);
+}
+
+std::string GetCleanMountNamespace(pid_t pid) {
+    UniqueFd fd = Connect(1);
+    if (fd == -1) {
+        PLOGE("GetCleanMountNamespace");
+        return "";
+    }
+    socket_utils::write_u8(fd, (uint8_t) SocketAction::GetCleanMountNamespace);
+    socket_utils::write_u32(fd, (uint32_t) pid);
+    uint32_t target_pid = socket_utils::read_u32(fd);
+    uint32_t target_fd = socket_utils::read_u8(fd);
+    if (target_fd == 0) return "";
+    return "/proc/" + std::to_string(target_pid) + "/fd/" + std::to_string(target_fd);
 }
 
 std::vector<Module> ReadModules() {
