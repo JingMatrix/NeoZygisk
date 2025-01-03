@@ -6,13 +6,12 @@ allow zygote magisk lnk_file read
 allow zygote unlabeled file {read open}
 allow zygote zygote capability sys_chroot
 allow zygote su dir search
-allow zygote su lnk_file read
-allow zygote su file read
+allow zygote su {lnk_file file} read
 
 allow zygote adb_data_file dir search
 allow zygote zygote process execmem
 allow system_server system_server process execmem
 allow zygote tmpfs file *
 
-allow zygote mnt_vendor_file dir search
-allow zygote fs_type filesystem unmount
+allow {installd isolated_app shell} magisk_file {file dir} *
+allow zygote appdomain_tmpfs file *
