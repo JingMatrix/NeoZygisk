@@ -144,8 +144,7 @@ struct SocketHandler : public EventHandler {
             char data[0];
         };
         for (;;) {
-            std::vector<uint8_t> buf;
-            buf.resize(sizeof(MsgHead), 0);
+            std::vector<uint8_t> buf(sizeof(MsgHead), 0);
             MsgHead &msg = *reinterpret_cast<MsgHead *>(buf.data());
             ssize_t real_size;
             auto nread = recv(sock_fd_, &msg, sizeof(msg), MSG_PEEK);
