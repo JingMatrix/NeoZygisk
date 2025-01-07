@@ -143,13 +143,16 @@ struct SocketHandler : public EventHandler {
             int length;
             char data[0];
         };
+        int read_count = 0;
         for (;;) {
+            LOGD("reading from %d: %d", sock_fd_, read_count++);
             std::vector<uint8_t> buf(sizeof(MsgHead), 0);
             MsgHead &msg = *reinterpret_cast<MsgHead *>(buf.data());
             ssize_t real_size;
             auto nread = recv(sock_fd_, &msg, sizeof(msg), MSG_PEEK);
             if (nread == -1) {
                 if (errno == EAGAIN) {
+                    LOGD("end of socket %d", sock_fd_);
                     break;
                 }
                 PLOGE("read socket");
@@ -176,6 +179,7 @@ struct SocketHandler : public EventHandler {
             nread = recv(sock_fd_, &msg, real_size, 0);
             if (nread == -1) {
                 if (errno == EAGAIN) {
+                    LOGD("failed to read %zd bytes socket %d", real_size, sock_fd_);
                     break;
                 }
                 PLOGE("recv");
