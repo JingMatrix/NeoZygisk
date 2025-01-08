@@ -146,7 +146,7 @@ struct SocketHandler : public EventHandler {
         int read_count = 0;
         void *buf = malloc(sizeof(MsgHead));
         for (;;) {
-            LOGD("reading from %d: %d", sock_fd_, read_count++);
+            LOGD("reading from %d to %p: %d", sock_fd_, buf, read_count++);
             MsgHead &msg = *reinterpret_cast<MsgHead *>(buf);
             ssize_t real_size;
             auto nread = recv(sock_fd_, &msg, sizeof(msg), MSG_PEEK);
@@ -227,24 +227,24 @@ struct SocketHandler : public EventHandler {
                 break;
             case DAEMON64_SET_INFO:
                 LOGD("received daemon64 info %s", msg.data);
-                status64.daemon_info = std::string(msg.data);
+                status64.daemon_info = std::string(strdup(msg.data));
                 updateStatus();
                 break;
             case DAEMON32_SET_INFO:
                 LOGD("received daemon32 info %s", msg.data);
-                status32.daemon_info = std::string(msg.data);
+                status32.daemon_info = std::string(strdup(msg.data));
                 updateStatus();
                 break;
             case DAEMON64_SET_ERROR_INFO:
                 LOGD("received daemon64 error info %s", msg.data);
                 status64.daemon_running = false;
-                status64.daemon_error_info = std::string(msg.data);
+                status64.daemon_error_info = std::string(strdup(msg.data));
                 updateStatus();
                 break;
             case DAEMON32_SET_ERROR_INFO:
                 LOGD("received daemon32 error info %s", msg.data);
                 status32.daemon_running = false;
-                status32.daemon_error_info = std::string(msg.data);
+                status32.daemon_error_info = std::string(strdup(msg.data));
                 updateStatus();
                 break;
             case SYSTEM_SERVER_STARTED:
