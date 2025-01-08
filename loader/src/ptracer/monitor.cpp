@@ -144,10 +144,10 @@ struct SocketHandler : public EventHandler {
             char data[0];
         };
         int read_count = 0;
+        void *buf = malloc(sizeof(MsgHead));
         for (;;) {
             LOGD("reading from %d: %d", sock_fd_, read_count++);
-            std::vector<uint8_t> buf(sizeof(MsgHead), 0);
-            MsgHead &msg = *reinterpret_cast<MsgHead *>(buf.data());
+            MsgHead &msg = *reinterpret_cast<MsgHead *>(buf);
             ssize_t real_size;
             auto nread = recv(sock_fd_, &msg, sizeof(msg), MSG_PEEK);
             if (nread == -1) {
@@ -175,7 +175,8 @@ struct SocketHandler : public EventHandler {
                 }
                 real_size = sizeof(Command);
             }
-            buf.resize(real_size);
+            buf = realloc(buf, real_size);
+            msg = *reinterpret_cast<MsgHead *>(buf);
             nread = recv(sock_fd_, &msg, real_size, 0);
             if (nread == -1) {
                 if (errno == EAGAIN) {
@@ -252,6 +253,7 @@ struct SocketHandler : public EventHandler {
             }
             break;
         }
+        free(buf);
     }
 
     ~SocketHandler() {
