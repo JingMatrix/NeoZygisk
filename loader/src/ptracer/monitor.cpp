@@ -115,7 +115,14 @@ static Status status64;
 static Status status32;
 
 struct SocketHandler : public EventHandler {
+    struct [[gnu::packed]] MsgHead {
+        Command cmd;
+        int length;
+        char data[0];
+    };
+
     int sock_fd_;
+    void *buf = malloc(sizeof(MsgHead));
 
     bool Init() {
         sock_fd_ = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
@@ -138,13 +145,7 @@ struct SocketHandler : public EventHandler {
     int GetFd() override { return sock_fd_; }
 
     void HandleEvent(EventLoop &loop, uint32_t) override {
-        struct [[gnu::packed]] MsgHead {
-            Command cmd;
-            int length;
-            char data[0];
-        };
         int read_count = 0;
-        void *buf = malloc(sizeof(MsgHead));
         for (;;) {
             LOGD("reading from %d to %p: %d", sock_fd_, buf, read_count++);
             MsgHead &msg = *reinterpret_cast<MsgHead *>(buf);
@@ -227,24 +228,24 @@ struct SocketHandler : public EventHandler {
                 break;
             case DAEMON64_SET_INFO:
                 LOGD("received daemon64 info %s", msg.data);
-                status64.daemon_info = std::string(strdup(msg.data));
+                status64.daemon_info = std::string(msg.data);
                 updateStatus();
                 break;
             case DAEMON32_SET_INFO:
                 LOGD("received daemon32 info %s", msg.data);
-                status32.daemon_info = std::string(strdup(msg.data));
+                status32.daemon_info = std::string(msg.data);
                 updateStatus();
                 break;
             case DAEMON64_SET_ERROR_INFO:
                 LOGD("received daemon64 error info %s", msg.data);
                 status64.daemon_running = false;
-                status64.daemon_error_info = std::string(strdup(msg.data));
+                status64.daemon_error_info = std::string(msg.data);
                 updateStatus();
                 break;
             case DAEMON32_SET_ERROR_INFO:
                 LOGD("received daemon32 error info %s", msg.data);
                 status32.daemon_running = false;
-                status32.daemon_error_info = std::string(strdup(msg.data));
+                status32.daemon_error_info = std::string(msg.data);
                 updateStatus();
                 break;
             case SYSTEM_SERVER_STARTED:
@@ -253,11 +254,11 @@ struct SocketHandler : public EventHandler {
             }
             break;
         }
-        free(buf);
     }
 
     ~SocketHandler() {
         if (sock_fd_ >= 0) close(sock_fd_);
+        free(buf);
     }
 };
 
