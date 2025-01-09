@@ -105,13 +105,13 @@ jobs:
       - name: Upload release symbols
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ steps.prepareArtifact.outputs.releaseName }}-symbols
+          name: release-symbols
           path: "zygiskd/build/symbols/release"
 
       - name: Upload debug symbols
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ steps.prepareArtifact.outputs.debugName }}-symbols
+          name: debug-symbols
           path: "zygiskd/build/symbols/debug"
           
       - name: Post to channel

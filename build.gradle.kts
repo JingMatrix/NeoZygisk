@@ -20,7 +20,7 @@ val gitCommitHash = "git rev-parse --verify --short HEAD".execute()
 
 val moduleId by extra("zygisksu")
 val moduleName by extra("NeoZygisk")
-val verName by extra("v1-0.0.0.0")
+val verName by extra("v1-0.0")
 val verCode by extra(gitCommitCount)
 val commitHash by extra(gitCommitHash)
 val minAPatchVersion by extra(10762)
