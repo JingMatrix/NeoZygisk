@@ -120,9 +120,9 @@ struct SocketHandler : public EventHandler {
         int length;
         char data[0];
     };
+    std::vector<uint8_t> buf;
 
     int sock_fd_;
-    void *buf = malloc(sizeof(MsgHead));
 
     bool Init() {
         sock_fd_ = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
@@ -145,15 +145,13 @@ struct SocketHandler : public EventHandler {
     int GetFd() override { return sock_fd_; }
 
     void HandleEvent(EventLoop &loop, uint32_t) override {
-        int read_count = 0;
         for (;;) {
-            LOGD("reading from %d to %p: %d", sock_fd_, buf, read_count++);
-            MsgHead &msg = *reinterpret_cast<MsgHead *>(buf);
+            buf.resize(sizeof(MsgHead), 0);
+            MsgHead &msg = *reinterpret_cast<MsgHead *>(buf.data());
             ssize_t real_size;
             auto nread = recv(sock_fd_, &msg, sizeof(msg), MSG_PEEK);
             if (nread == -1) {
                 if (errno == EAGAIN) {
-                    LOGD("end of socket %d", sock_fd_);
                     break;
                 }
                 PLOGE("read socket");
@@ -176,12 +174,10 @@ struct SocketHandler : public EventHandler {
                 }
                 real_size = sizeof(Command);
             }
-            buf = realloc(buf, real_size);
-            msg = *reinterpret_cast<MsgHead *>(buf);
+            buf.resize(real_size);
             nread = recv(sock_fd_, &msg, real_size, 0);
             if (nread == -1) {
                 if (errno == EAGAIN) {
-                    LOGD("failed to read %zd bytes socket %d", real_size, sock_fd_);
                     break;
                 }
                 PLOGE("recv");
@@ -252,13 +248,11 @@ struct SocketHandler : public EventHandler {
                 LOGD("system server started, module.prop updated");
                 break;
             }
-            break;
         }
     }
 
     ~SocketHandler() {
         if (sock_fd_ >= 0) close(sock_fd_);
-        free(buf);
     }
 };
 
