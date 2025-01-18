@@ -94,10 +94,10 @@ pub fn main() -> Result<()> {
         trace!("New daemon action {:?}", action);
         match action {
             DaemonSocketAction::CacheMountNamespace => {
-                let pid = stream.read_u32()?;
-                save_mount_namespace(pid as i32, MountNamespace::Clean)?;
-                save_mount_namespace(pid as i32, MountNamespace::Root)?;
-                save_mount_namespace(pid as i32, MountNamespace::Module)?;
+                let pid = stream.read_u32()? as i32;
+                save_mount_namespace(pid, MountNamespace::Clean)?;
+                save_mount_namespace(pid, MountNamespace::Root)?;
+                save_mount_namespace(pid, MountNamespace::Module)?;
             }
             DaemonSocketAction::PingHeartbeat => {
                 let value = constants::ZYGOTE_INJECTED;
