@@ -141,7 +141,16 @@ pub fn save_mount_namespace(pid: i32, namespace_type: MountNamespace) -> Result<
         MountNamespace::Root => ROOT_MNT_NS_FD.initiated(),
         MountNamespace::Module => MODULE_MNT_NS_FD.initiated(),
     };
+
     if !is_initialized {
+        if pid == -1 {
+            bail!(
+                "mount profiles not fully cached: {}, {}, {}",
+                CLEAN_MNT_NS_FD.initiated(),
+                ROOT_MNT_NS_FD.initiated(),
+                MODULE_MNT_NS_FD.initiated()
+            );
+        }
         // Use a pipe to keep the forked child process open
         // till the namespace is read.
 

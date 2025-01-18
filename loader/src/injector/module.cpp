@@ -327,6 +327,9 @@ void ZygiskContext::app_specialize_pre() {
     flags |= APP_SPECIALIZE;
 
     info_flags = zygiskd::GetProcessFlags(g_ctx->args.app->uid);
+    if (info_flags & IS_FIRST_PROCESS) {
+        zygiskd::CacheMountNamespace(getpid());
+    }
     if ((info_flags & UNMOUNT_MASK) == UNMOUNT_MASK) {
         LOGI("[%s] is on the denylist\n", process);
         flags |= DO_REVERT_UNMOUNT;

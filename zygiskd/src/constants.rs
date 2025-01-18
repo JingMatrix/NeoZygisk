@@ -27,6 +27,7 @@ pub const SYSTEM_SERVER_STARTED: i32 = 10;
 pub enum DaemonSocketAction {
     PingHeartbeat,
     GetProcessFlags,
+    CacheMountNamespace,
     UpdateMountNamespace,
     ReadModules,
     RequestCompanionSocket,
