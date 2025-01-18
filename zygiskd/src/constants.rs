@@ -35,7 +35,7 @@ pub enum DaemonSocketAction {
     SystemServerStarted,
 }
 
-#[derive(Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Debug, Eq, PartialEq, TryFromPrimitive, Clone, Copy)]
 #[repr(u8)]
 pub enum MountNamespace {
     Clean,

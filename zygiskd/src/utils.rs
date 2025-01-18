@@ -124,7 +124,7 @@ pub fn switch_mount_namespace(pid: i32) -> Result<()> {
 
 // save mount namespaces for all application process
 static CLEAN_MNT_NS_FD: LateInit<i32> = LateInit::new();
-static ROOT_MNT_NS_FD: LateInit<i32> = LateInit::new();
+pub static ROOT_MNT_NS_FD: LateInit<i32> = LateInit::new();
 static MODULE_MNT_NS_FD: LateInit<i32> = LateInit::new();
 
 // Use `man 7 namespaces` to read the Linux manual about namespaces.

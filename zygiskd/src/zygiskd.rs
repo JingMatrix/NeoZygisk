@@ -1,5 +1,7 @@
 use crate::constants::{DaemonSocketAction, MountNamespace, ProcessFlags};
-use crate::utils::{LateInit, UnixStreamExt, check_unix_socket, save_mount_namespace};
+use crate::utils::{
+    LateInit, ROOT_MNT_NS_FD, UnixStreamExt, check_unix_socket, save_mount_namespace,
+};
 use crate::{constants, lp_select, root_impl, utils};
 use anyhow::{Result, bail};
 use log::{debug, error, info, trace, warn};
@@ -284,14 +286,14 @@ fn handle_daemon_action(
             let namespace_type = stream.read_u8()?;
             let namespace_type = MountNamespace::try_from(namespace_type)?;
             stream.write_u32(unsafe { libc::getpid() } as u32)?;
-            if namespace_type == MountNamespace::Clean {
-                // we will only clean once, which is exactly the moment
-                // to cache mount namespaces
+            let fd = save_mount_namespace(pid as i32, namespace_type.clone())?;
+            stream.write_u32(fd as u32)?;
+            if !ROOT_MNT_NS_FD.initiated() && namespace_type == MountNamespace::Clean {
+                // If the Root mouting profiles haven't been cached yet,
+                // then it is exactly the moment to cache mount namespaces.
                 save_mount_namespace(pid as i32, MountNamespace::Root)?;
                 save_mount_namespace(pid as i32, MountNamespace::Module)?;
             }
-            let fd = save_mount_namespace(pid as i32, namespace_type)?;
-            stream.write_u32(fd as u32)?;
         }
         DaemonSocketAction::ReadModules => {
             stream.write_usize(context.modules.len())?;
