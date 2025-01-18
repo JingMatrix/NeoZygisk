@@ -1,7 +1,5 @@
 use crate::constants::{DaemonSocketAction, MountNamespace, ProcessFlags};
-use crate::utils::{
-    LateInit, ROOT_MNT_NS_FD, UnixStreamExt, check_unix_socket, save_mount_namespace,
-};
+use crate::utils::{LateInit, UnixStreamExt, check_unix_socket, save_mount_namespace};
 use crate::{constants, lp_select, root_impl, utils};
 use anyhow::{Result, bail};
 use log::{debug, error, info, trace, warn};
@@ -242,6 +240,7 @@ fn handle_daemon_action(
 ) -> Result<()> {
     match action {
         DaemonSocketAction::GetProcessFlags => {
+            let pid = stream.read_u32()?;
             let uid = stream.read_u32()? as i32;
             let mut flags = ProcessFlags::empty();
             if !IS_FIRST_PROCESS.initiated() {
@@ -252,6 +251,9 @@ fn handle_daemon_action(
                     trace!("Uid {} is the first app process", uid,);
                 }
                 IS_FIRST_PROCESS.init(false);
+                save_mount_namespace(pid as i32, MountNamespace::Clean)?;
+                save_mount_namespace(pid as i32, MountNamespace::Root)?;
+                save_mount_namespace(pid as i32, MountNamespace::Module)?;
             } else if root_impl::uid_is_manager(uid) {
                 flags |= ProcessFlags::PROCESS_IS_MANAGER;
                 trace!("Uid {} is manager", uid,);
@@ -286,14 +288,8 @@ fn handle_daemon_action(
             let namespace_type = stream.read_u8()?;
             let namespace_type = MountNamespace::try_from(namespace_type)?;
             stream.write_u32(unsafe { libc::getpid() } as u32)?;
-            let fd = save_mount_namespace(pid as i32, namespace_type.clone())?;
+            let fd = save_mount_namespace(pid as i32, namespace_type)?;
             stream.write_u32(fd as u32)?;
-            if !ROOT_MNT_NS_FD.initiated() && namespace_type == MountNamespace::Clean {
-                // If the Root mouting profiles haven't been cached yet,
-                // then it is exactly the moment to cache mount namespaces.
-                save_mount_namespace(pid as i32, MountNamespace::Root)?;
-                save_mount_namespace(pid as i32, MountNamespace::Module)?;
-            }
         }
         DaemonSocketAction::ReadModules => {
             stream.write_usize(context.modules.len())?;

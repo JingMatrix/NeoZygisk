@@ -52,18 +52,19 @@ uint32_t GetProcessFlags(uid_t uid) {
         return 0;
     }
     socket_utils::write_u8(fd, (uint8_t) SocketAction::GetProcessFlags);
+    socket_utils::write_u32(fd, (uint32_t) getpid());
     socket_utils::write_u32(fd, uid);
     return socket_utils::read_u32(fd);
 }
 
-std::string UpdateMountNamespace(pid_t pid, MountNamespace type) {
+std::string UpdateMountNamespace(MountNamespace type) {
     UniqueFd fd = Connect(1);
     if (fd == -1) {
         PLOGE("UpdateMountNamespace");
         return "";
     }
     socket_utils::write_u8(fd, (uint8_t) SocketAction::UpdateMountNamespace);
-    socket_utils::write_u32(fd, (uint32_t) pid);
+    socket_utils::write_u32(fd, (uint32_t) getpid());
     socket_utils::write_u8(fd, (uint8_t) type);
     uint32_t target_pid = socket_utils::read_u32(fd);
     int target_fd = (int) socket_utils::read_u32(fd);

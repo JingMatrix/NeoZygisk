@@ -310,8 +310,7 @@ struct ZygiskContext {
 
     bool plt_hook_commit();
 
-    static bool update_mount_namespace(pid_t pid, zygiskd::MountNamespace namespace_type,
-                                       bool dry_run = false);
+    static bool update_mount_namespace(zygiskd::MountNamespace namespace_type);
 };
 
 #undef DCL_PRE_POST

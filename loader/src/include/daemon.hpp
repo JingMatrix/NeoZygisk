@@ -78,7 +78,7 @@ std::vector<Module> ReadModules();
 
 uint32_t GetProcessFlags(uid_t uid);
 
-std::string UpdateMountNamespace(pid_t pid, MountNamespace type);
+std::string UpdateMountNamespace(MountNamespace type);
 
 int ConnectCompanion(size_t index);
 

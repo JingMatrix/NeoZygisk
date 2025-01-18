@@ -327,9 +327,6 @@ void ZygiskContext::app_specialize_pre() {
     flags |= APP_SPECIALIZE;
 
     info_flags = zygiskd::GetProcessFlags(g_ctx->args.app->uid);
-    if (info_flags & IS_FIRST_PROCESS) {
-        update_mount_namespace(getpid(), zygiskd::MountNamespace::Clean, true);
-    }
     if ((info_flags & UNMOUNT_MASK) == UNMOUNT_MASK) {
         LOGI("[%s] is on the denylist\n", process);
         flags |= DO_REVERT_UNMOUNT;
@@ -397,7 +394,7 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
     flags |= APP_FORK_AND_SPECIALIZE;
 
     // unmount the root implementation for Zygote
-    update_mount_namespace(getpid(), zygiskd::MountNamespace::Clean, false);
+    update_mount_namespace(zygiskd::MountNamespace::Clean);
 
     fork_pre();
     if (is_child()) {
@@ -416,19 +413,12 @@ void ZygiskContext::nativeForkAndSpecialize_post() {
 
 // -----------------------------------------------------------------
 
-bool ZygiskContext::update_mount_namespace(pid_t pid, zygiskd::MountNamespace namespace_type,
-                                           bool dry_run) {
-    if (pid < 0) {
-        LOGD("update mount namespace with an invalid pid %d", pid);
-        return false;
-    }
-
-    std::string ns_path = zygiskd::UpdateMountNamespace(pid, namespace_type);
+bool ZygiskContext::update_mount_namespace(zygiskd::MountNamespace namespace_type) {
+    std::string ns_path = zygiskd::UpdateMountNamespace(namespace_type);
     if (!ns_path.starts_with("/proc/")) {
         PLOGE("update mount namespace [%s]", ns_path.data());
         return false;
     }
-    if (dry_run) return true;
 
     auto updated_ns = open(ns_path.data(), O_RDONLY);
     if (updated_ns >= 0) {
