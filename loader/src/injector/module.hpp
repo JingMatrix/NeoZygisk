@@ -269,6 +269,7 @@ struct ZygiskContext {
     uint32_t info_flags;
     std::bitset<MAX_FD_SIZE> allowed_fds;
     std::vector<int> exempted_fds;
+    bool unshare_called = false;
 
     struct RegisterInfo {
         regex_t regex;
@@ -325,7 +326,6 @@ struct HookContext {
     size_t block_size = 0;
     bool should_unmap = false;
     bool zygote_unmounted = false;
-    bool unshare_called = false;
     jint MODIFIER_NATIVE = 0;
     jmethodID member_getModifiers = nullptr;
     std::vector<lsplt::MapInfo> cached_map_infos = {};
