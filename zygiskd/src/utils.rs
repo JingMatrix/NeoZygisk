@@ -145,7 +145,7 @@ pub fn save_mount_namespace(pid: i32, namespace_type: MountNamespace) -> Result<
     if !is_initialized {
         if pid == -1 {
             bail!(
-                "mount profiles not fully cached: {}, {}, {}",
+                "Caching not finished [Clean, Root, Module]: [{}, {}, {}]",
                 CLEAN_MNT_NS_FD.initiated(),
                 ROOT_MNT_NS_FD.initiated(),
                 MODULE_MNT_NS_FD.initiated()
@@ -179,9 +179,9 @@ pub fn save_mount_namespace(pid: i32, namespace_type: MountNamespace) -> Result<
             }
             child if child > 0 => {
                 // Parent process
-                trace!("waiting {child} to update mount namespace");
+                trace!("waiting {child} to cache mount namespace");
                 if read_int(reader)? == 0 {
-                    trace!("{child} finished updating mount namespace");
+                    trace!("{child} finished caching mount namespace");
                 }
                 let ns_path = format!("/proc/{}/ns/mnt", child);
                 let ns_file = fs::OpenOptions::new().read(true).open(&ns_path)?;

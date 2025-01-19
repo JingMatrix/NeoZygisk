@@ -324,16 +324,21 @@ void ZygiskContext::run_modules_post() {
 }
 
 void ZygiskContext::app_specialize_pre() {
-    flags |= APP_SPECIALIZE;
+    if (!(flags & APP_FORK_AND_SPECIALIZE)) {
+        // Avoid fetching process flags twice
+        info_flags = zygiskd::GetProcessFlags(args.app->uid);
+    }
 
-    info_flags = zygiskd::GetProcessFlags(g_ctx->args.app->uid);
-    if (info_flags & IS_FIRST_PROCESS) {
+    if ((info_flags & IS_FIRST_PROCESS) && !g_hook->zygote_unmounted) {
         zygiskd::CacheMountNamespace(getpid());
     }
+
     if ((info_flags & UNMOUNT_MASK) == UNMOUNT_MASK) {
         LOGI("[%s] is on the denylist\n", process);
         flags |= DO_REVERT_UNMOUNT;
     }
+
+    flags |= APP_SPECIALIZE;
     run_modules_pre();
 }
 
@@ -342,7 +347,7 @@ void ZygiskContext::app_specialize_post() {
 
     if ((info_flags & (PROCESS_IS_MANAGER | PROCESS_ROOT_IS_MAGISK)) ==
         (PROCESS_IS_MANAGER | PROCESS_ROOT_IS_MAGISK)) {
-        LOGI("current uid %d is manager!", g_ctx->args.app->uid);
+        LOGI("current uid %d is manager!", args.app->uid);
         setenv("ZYGISK_ENABLED", "1", 1);
     }
 
@@ -396,8 +401,19 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
     LOGV("pre forkAndSpecialize [%s]\n", process);
     flags |= APP_FORK_AND_SPECIALIZE;
 
-    // unmount the root implementation for Zygote
-    update_mount_namespace(zygiskd::MountNamespace::Clean);
+    info_flags = zygiskd::GetProcessFlags(args.app->uid);
+
+    if (!g_hook->zygote_unmounted) {
+        // Cache mount profiles if not done
+        if (info_flags & IS_FIRST_PROCESS) {
+            zygiskd::CacheMountNamespace(getpid());
+        }
+
+        // Unmount the root implementation for Zygote
+        update_mount_namespace(zygiskd::MountNamespace::Clean);
+        g_hook->zygote_unmounted = true;
+        LOGV("zygote process mounting points cleared");
+    }
 
     fork_pre();
     if (is_child()) {

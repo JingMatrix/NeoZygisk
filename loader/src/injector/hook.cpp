@@ -102,6 +102,8 @@ DCL_HOOK_FUNC(int, fork) { return (g_ctx && g_ctx->pid >= 0) ? g_ctx->pid : old_
 // Unmount stuffs in the process's private mount namespace
 DCL_HOOK_FUNC(static int, unshare, int flags) {
     int res = old_unshare(flags);
+    g_hook->unshare_called = true;
+
     if (g_ctx && (flags & CLONE_NEWNS) != 0 && res == 0 &&
         // Skip system server and the first app process since we don't need to hide traces for them
         !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE) && !(g_ctx->info_flags & IS_FIRST_PROCESS)) {
@@ -163,6 +165,11 @@ ZygiskContext::ZygiskContext(JNIEnv *env, void *args)
 }
 
 ZygiskContext::~ZygiskContext() {
+    // Ensure that DenyList is effective
+    if (!g_hook->unshare_called) {
+        new_unshare(CLONE_NEWNS);
+    }
+
     // This global pointer points to a variable on the stack.
     // Set this to nullptr to prevent leaking local variable.
     // This also disables most plt hooked functions.

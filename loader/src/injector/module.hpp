@@ -324,6 +324,8 @@ struct HookContext {
     void *start_addr = nullptr;
     size_t block_size = 0;
     bool should_unmap = false;
+    bool zygote_unmounted = false;
+    bool unshare_called = false;
     jint MODIFIER_NATIVE = 0;
     jmethodID member_getModifiers = nullptr;
     std::vector<lsplt::MapInfo> cached_map_infos = {};
