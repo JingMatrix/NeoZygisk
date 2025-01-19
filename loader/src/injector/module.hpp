@@ -269,7 +269,6 @@ struct ZygiskContext {
     uint32_t info_flags;
     std::bitset<MAX_FD_SIZE> allowed_fds;
     std::vector<int> exempted_fds;
-    bool unshare_called = false;
 
     struct RegisterInfo {
         regex_t regex;
