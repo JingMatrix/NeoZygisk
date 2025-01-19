@@ -324,6 +324,10 @@ void ZygiskContext::run_modules_post() {
 }
 
 void ZygiskContext::app_specialize_pre() {
+    if (unshare_called) {
+        LOGV("reset unshare_called to false");
+        unshare_called = false;
+    }
     if (!(flags & APP_FORK_AND_SPECIALIZE)) {
         // Avoid fetching process flags twice
         info_flags = zygiskd::GetProcessFlags(args.app->uid);
@@ -343,6 +347,10 @@ void ZygiskContext::app_specialize_pre() {
 }
 
 void ZygiskContext::app_specialize_post() {
+    if (unshare_called) {
+        LOGV("unshare is called");
+    }
+
     run_modules_post();
 
     if ((info_flags & (PROCESS_IS_MANAGER | PROCESS_ROOT_IS_MAGISK)) ==

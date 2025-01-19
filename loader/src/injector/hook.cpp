@@ -102,11 +102,17 @@ DCL_HOOK_FUNC(int, fork) { return (g_ctx && g_ctx->pid >= 0) ? g_ctx->pid : old_
 // Unmount stuffs in the process's private mount namespace
 DCL_HOOK_FUNC(static int, unshare, int flags) {
     int res = old_unshare(flags);
-    if (g_ctx) g_ctx->unshare_called = true;
+    if (g_ctx) {
+        LOGV("unshare is called and hooked");
+        g_ctx->unshare_called = true;
+    } else {
+        LOGV("unshare is called but g_ctx is null");
+    }
 
     if (g_ctx && (flags & CLONE_NEWNS) != 0 && res == 0 &&
         // Skip system server and the first app process since we don't need to hide traces for them
         !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE) && !(g_ctx->info_flags & IS_FIRST_PROCESS)) {
+        LOGV("setting mount profiles");
         if (g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
         } else if (!(g_ctx->flags & DO_REVERT_UNMOUNT)) {
@@ -165,10 +171,13 @@ ZygiskContext::ZygiskContext(JNIEnv *env, void *args)
 }
 
 ZygiskContext::~ZygiskContext() {
+    LOGV("Checking if unshare is hooked");
     // Ensure that DenyList is effective
     if ((info_flags & APP_FORK_AND_SPECIALIZE) && !unshare_called) {
         LOGV("unshare wasn't called before destroying g_ctx");
         new_unshare(CLONE_NEWNS);
+    } else if (!unshare_called) {
+        LOGW("DenyList is not effective");
     }
 
     // This global pointer points to a variable on the stack.
