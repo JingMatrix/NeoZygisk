@@ -91,25 +91,25 @@ jobs:
           zip -r $debugSymbolName zygiskd/build/symbols/debug
 
       - name: Upload release
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.prepareArtifact.outputs.releaseName }}
           path: "./zksu-release/*"
 
       - name: Upload debug
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.prepareArtifact.outputs.debugName }}
           path: "./zksu-debug/*"
 
       - name: Upload release symbols
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: release-symbols
           path: "zygiskd/build/symbols/release"
 
       - name: Upload debug symbols
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: debug-symbols
           path: "zygiskd/build/symbols/debug"
