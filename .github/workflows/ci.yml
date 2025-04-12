@@ -54,7 +54,7 @@ jobs:
       - name: Setup rust-cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ github.workflow }}-${{ github.ref }}-rust-${{ hashFiles('**/Cargo.lock') }}
+          key: "neozygisk-rust-cache"
           workspaces: |
             zygiskd/src -> ../build/intermediates/rust
           cache-on-failure: true
