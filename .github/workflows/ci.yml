@@ -54,8 +54,9 @@ jobs:
       - name: Setup rust-cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-rust-cache
-          working-directory: zygiskd/src
+          key: ${{ runner.os }}-rust-${{ hashFiles('**/Cargo.lock') }}
+          workspaces: |
+            zygiskd/src -> ../build/intermediates/rust
           cache-on-failure: true
 
       - name: Set up ccache
