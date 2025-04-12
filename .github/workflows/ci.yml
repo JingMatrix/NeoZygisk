@@ -54,10 +54,11 @@ jobs:
       - name: Setup rust-cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-rust-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ github.workflow }}-${{ github.ref }}-rust-${{ hashFiles('**/Cargo.lock') }}
           workspaces: |
             zygiskd/src -> ../build/intermediates/rust
           cache-on-failure: true
+          cache-targets: false
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2.14
