@@ -43,22 +43,22 @@ jobs:
           distribution: "temurin"
           java-version: "21"
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
-          targets: aarch64-linux-android, x86_64-linux-android, i686-linux-android, armv7-linux-androideabi
+          targets: aarch64-linux-android,x86_64-linux-android,i686-linux-android,armv7-linux-androideabi
 
-      - name: Cache Cargo registry
+      - name: Cache Rust dependencies
         uses: actions/cache@v3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ${{ runner.os }}-cargo-
 
       - name: Setup rust-cache
         uses: Swatinem/rust-cache@v2
@@ -74,7 +74,7 @@ jobs:
         uses: hendrikmuhs/ccache-action@v1.2.14
         with:
           max-size: 2G
-          key: ${{ runner.os }}-ccache-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          key: ${{ runner.os }}-ccache-${{ hashFiles('**/*.rs', '**/Cargo.toml', '**/Cargo.lock') }}
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - name: Build with Gradle
