@@ -43,30 +43,28 @@ jobs:
           distribution: "temurin"
           java-version: "21"
 
-      - name: Setup Rust
-        run: |
-          rustup override set nightly
-          rustup target add aarch64-linux-android
-          rustup target add x86_64-linux-android
-          rustup target add i686-linux-android
-          rustup target add armv7-linux-androideabi
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: aarch64-linux-android, x86_64-linux-android, i686-linux-android, armv7-linux-androideabi
 
-      - name: Cache Rust dependencies
+      - name: Cache Cargo registry
         uses: actions/cache@v3
-        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
 
       - name: Setup rust-cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: "neozygisk-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}"
+          key: "neozygisk-${{ runner.os }}-${{ github.sha }}"
+          shared-key: "neozygisk-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}"
           workspaces: |
             zygiskd/src -> ../build/intermediates/rust
           cache-on-failure: true
@@ -104,38 +102,23 @@ jobs:
           zip -r $releaseSymbolName zygiskd/build/symbols/release
           zip -r $debugSymbolName zygiskd/build/symbols/debug
 
-      - name: Upload release
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.prepareArtifact.outputs.releaseName }}
           path: "./zksu-release/*"
 
-      - name: Upload debug
+      - name: Upload debug artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.prepareArtifact.outputs.debugName }}
           path: "./zksu-debug/*"
 
-      - name: Upload release symbols
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-symbols
-          path: "zygiskd/build/symbols/release"
-
-      - name: Upload debug symbols
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-symbols
-          path: "zygiskd/build/symbols/debug"
-          
-      - name: Post to channel
+      - name: Post to Telegram
         if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && github.ref_type != 'tag' && inputs.post_telegram != 'false' }}
         env:
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          COMMIT_URL: ${{ github.event.head_commit.url }}
-          COMMIT_ID: ${{ github.event.head_commit.id }}
         run: |
           if [ ! -z "${{ secrets.BOT_TOKEN }}" ]; then
             OUTPUT="module/build/outputs/release"
@@ -144,5 +127,5 @@ jobs:
             export ReleaseSymbol="${{ steps.prepareArtifact.outputs.releaseSymbolName }}"
             export DebugSymbol="${{ steps.prepareArtifact.outputs.debugSymbolName }}"
             URL=$(python3 .github/scripts/telegram_url.py)
-            curl -v "$URL" -F Release="@$Release" -F Debug="@$Debug" -F ReleaseSymbol="@$ReleaseSymbol" -F DebugSymbol="@$DebugSymbol" 
+            curl -v "$URL" -F Release="@$Release" -F Debug="@$Debug" -F ReleaseSymbol="@$ReleaseSymbol" -F DebugSymbol="@$DebugSymbol"
           fi
