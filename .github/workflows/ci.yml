@@ -54,17 +54,18 @@ jobs:
       - name: Setup rust-cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          workspaces: |
-            zygiskd/src -> ../build/intermediates/rust
-          cache-targets: false
+          key: ${{ runner.os }}-rust-cache
+          working-directory: zygiskd/src
+          cache-on-failure: true
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2.14
         with:
           max-size: 2G
-          key: ${{ runner.os }}-${{ hashFiles('**/*.rs') }}
-          restore-keys: ${{ runner.os }}
+          key: ${{ runner.os }}-ccache-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+            ${{ runner.os }}-
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - name: Build with Gradle
