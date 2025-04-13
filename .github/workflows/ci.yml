@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: "recursive"
           fetch-depth: 0
@@ -51,14 +51,15 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
+        id: cargo-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-${{ runner.os }}-
 
       - name: Setup rust-cache
         uses: Swatinem/rust-cache@v2
@@ -74,7 +75,7 @@ jobs:
         uses: hendrikmuhs/ccache-action@v1.2.14
         with:
           max-size: 2G
-          key: ${{ runner.os }}-ccache-${{ hashFiles('**/*.rs', '**/Cargo.toml', '**/Cargo.lock') }}
+          key: ccache-${{ runner.os }}-${{ hashFiles('**/*.rs', '**/Cargo.toml', '**/Cargo.lock') }}
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - name: Build with Gradle
