@@ -76,7 +76,7 @@ jobs:
         with:
           max-size: 2G
           key: ccache-${{ runner.os }}-${{ hashFiles('**/*.rs', '**/Cargo.toml', '**/Cargo.lock') }}
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) }}
 
       - name: Build with Gradle
         run: |
@@ -115,8 +115,20 @@ jobs:
           name: ${{ steps.prepareArtifact.outputs.debugName }}
           path: "./zksu-debug/*"
 
+      - name: Upload symbol artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prepareArtifact.outputs.releaseSymbolName }}
+          path: ${{ steps.prepareArtifact.outputs.releaseSymbolName }}
+
+      - name: Upload debug symbol artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prepareArtifact.outputs.debugSymbolName }}
+          path: ${{ steps.prepareArtifact.outputs.debugSymbolName }}
+
       - name: Post to Telegram
-        if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && github.ref_type != 'tag' && inputs.post_telegram != 'false' }}
+        if: ${{ success() && github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) && inputs.post_telegram != 'false' }}
         env:
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
