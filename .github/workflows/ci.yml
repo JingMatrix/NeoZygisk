@@ -53,12 +53,12 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: actions/cache@v3
-        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
+            zygiskd/target
           key: ${{ runner.os }}-rust-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-rust-
@@ -67,8 +67,8 @@ jobs:
         uses: hendrikmuhs/ccache-action@v1.2.14
         with:
           max-size: 2G
-          key: ${{ runner.os }}-ccache-${{ hashFiles('**/*.rs', '**/*.cpp', '**/*.h') }}
-          restore-keys: ${{ runner.os }}-ccache-
+          key: ${{ runner.os }}-ccache
+          restore-keys: ${{ runner.os }}-ccache
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - name: Build with Gradle
