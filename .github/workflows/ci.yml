@@ -43,12 +43,6 @@ jobs:
           distribution: "temurin"
           java-version: "21"
 
-      - name: Setup rust-cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: zygiskd/src -> ../build/intermediates/rust
-          cache-targets: false
-          
       - name: Setup Rust
         run: |
           rustup override set nightly
@@ -57,12 +51,20 @@ jobs:
           rustup target add i686-linux-android
           rustup target add armv7-linux-androideabi
 
+      - name: Setup rust-cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            zygiskd/src -> ../build/intermediates/rust
+          key: ${{ runner.os }}-rust-${{ hashFiles('**/Cargo.lock') }}
+          cache-targets: false
+
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2.14
         with:
           max-size: 2G
-          key: ${{ runner.os }}
-          restore-keys: ${{ runner.os }}
+          key: ${{ runner.os }}-ccache-${{ hashFiles('**/*.rs', '**/*.cpp', '**/*.h') }}
+          restore-keys: ${{ runner.os }}-ccache-
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - name: Build with Gradle
