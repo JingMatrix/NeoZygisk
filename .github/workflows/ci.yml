@@ -51,7 +51,7 @@ jobs:
           rustup target add i686-linux-android
           rustup target add armv7-linux-androideabi
 
-      - name: Cache Rust build
+      - name: Cache Rust dependencies
         uses: actions/cache@v3
         id: rust-cache
         with:
@@ -60,16 +60,9 @@ jobs:
             ~/.cargo/git
             target
             zygiskd/target
-          key: rust-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-rust-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            rust-
-
-      - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2.14
-        with:
-          max-size: 2G
-          key: ccache-${{ runner.os }}
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+            ${{ runner.os }}-rust-
 
       - name: Build with Gradle
         run: |
