@@ -200,7 +200,7 @@ void ZygiskContext::sanitize_fds() {
             env->SetIntArrayRegion(array, old_len, static_cast<int>(exempted_fds.size()),
                                    exempted_fds.data());
             for (int fd : exempted_fds) {
-                if (fd >= 0 && fd < allowed_fds.size()) {
+                if (fd >= 0 && static_cast<size_t>(fd) < allowed_fds.size()) {
                     allowed_fds[fd] = true;
                 }
             }
@@ -213,7 +213,7 @@ void ZygiskContext::sanitize_fds() {
             int len = env->GetArrayLength(fdsToIgnore);
             for (int i = 0; i < len; ++i) {
                 int fd = arr[i];
-                if (fd >= 0 && fd < allowed_fds.size()) {
+                if (fd >= 0 && static_cast<size_t>(fd) < allowed_fds.size()) {
                     allowed_fds[fd] = true;
                 }
             }
@@ -231,7 +231,7 @@ void ZygiskContext::sanitize_fds() {
     int dfd = dirfd(dir.get());
     for (dirent *entry; (entry = readdir(dir.get()));) {
         int fd = parse_int(entry->d_name);
-        if ((fd < 0 || fd >= allowed_fds.size() || !allowed_fds[fd]) && fd != dfd) {
+        if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) && fd != dfd) {
             close(fd);
         }
     }
@@ -267,7 +267,7 @@ void ZygiskContext::fork_pre() {
     auto dir = xopen_dir("/proc/self/fd");
     for (dirent *entry; (entry = readdir(dir.get()));) {
         int fd = parse_int(entry->d_name);
-        if (fd < 0 || fd >= allowed_fds.size()) {
+        if (fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size()) {
             close(fd);
             continue;
         }

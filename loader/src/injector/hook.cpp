@@ -1,4 +1,6 @@
 #include <dlfcn.h>
+#include <pthread.h>
+#include <sched.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/resource.h>

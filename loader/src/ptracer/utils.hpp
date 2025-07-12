@@ -1,7 +1,9 @@
 #pragma once
 #include <sys/ptrace.h>
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 struct MapInfo {
     /// \brief The start address of the memory region.
