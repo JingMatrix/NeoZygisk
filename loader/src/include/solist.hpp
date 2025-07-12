@@ -89,7 +89,6 @@ private:
 
 static SoInfo *solist = nullptr;
 static SoInfo *somain = nullptr;
-static SoInfo **sonext = nullptr;
 
 static uint64_t *g_module_load_counter = nullptr;
 static uint64_t *g_module_unload_counter = nullptr;
