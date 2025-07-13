@@ -87,7 +87,7 @@ private:
     };
 };
 
-static SoInfo *solist = nullptr;
+static SoInfo *solinker = nullptr;
 static SoInfo *somain = nullptr;
 
 static uint64_t *g_module_load_counter = nullptr;
