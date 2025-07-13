@@ -46,9 +46,9 @@ bool initialize() {
     if (!ProtectedDataGuard::setup(linker)) return false;
     LOGD("found symbol ProtectedDataGuard");
 
-    std::string_view solist_sym_name = linker.findSymbolNameByPrefix("__dl__ZL6solist");
-    if (solist_sym_name.empty()) return false;
-    LOGD("found symbol name %s", solist_sym_name.data());
+    std::string_view somain_sym_name = linker.findSymbolNameByPrefix("__dl__ZL6somain");
+    if (somain_sym_name.empty()) return false;
+    LOGD("found symbol name %s", somain_sym_name.data());
 
     std::string_view soinfo_free_name =
         linker.findSymbolNameByPrefix("__dl__ZL11soinfo_freeP6soinfo");
@@ -57,31 +57,36 @@ bool initialize() {
 
     char llvm_sufix[llvm_suffix_length + 1];
 
-    if (solist_sym_name.length() != strlen("__dl__ZL6solist")) {
-        strncpy(llvm_sufix, solist_sym_name.data() + strlen("__dl__ZL6solist"), sizeof(llvm_sufix));
+    if (somain_sym_name.length() != strlen("__dl__ZL6somain")) {
+        strncpy(llvm_sufix, somain_sym_name.data() + strlen("__dl__ZL6somain"), sizeof(llvm_sufix));
     } else {
         llvm_sufix[0] = '\0';
     }
 
-    char somain_sym_name[sizeof("__dl__ZL6somain") + sizeof(llvm_sufix)];
-    snprintf(somain_sym_name, sizeof(somain_sym_name), "__dl__ZL6somain%s", llvm_sufix);
+    char solinker_sym_name[sizeof("__dl__ZL8solinker") + sizeof(llvm_sufix)];
+    snprintf(solinker_sym_name, sizeof(solinker_sym_name), "__dl__ZL8solinker%s", llvm_sufix);
+
+    // for SDK < 36 (Android 16), the linker binary is loaded with name solist
+    char solist_sym_name[sizeof("__dl__ZL6solist") + sizeof(llvm_sufix)];
+    snprintf(solist_sym_name, sizeof(solist_sym_name), "__dl__ZL6solist%s", llvm_sufix);
 
     char sonext_sym_name[sizeof("__dl__ZL6sonext") + sizeof(llvm_sufix)];
-    snprintf(sonext_sym_name, sizeof(somain_sym_name), "__dl__ZL6sonext%s", llvm_sufix);
+    snprintf(sonext_sym_name, sizeof(sonext_sym_name), "__dl__ZL6sonext%s", llvm_sufix);
 
     char vdso_sym_name[sizeof("__dl__ZL4vdso") + sizeof(llvm_sufix)];
     snprintf(vdso_sym_name, sizeof(vdso_sym_name), "__dl__ZL4vdso%s", llvm_sufix);
 
-    somain = getStaticPointer<SoInfo>(linker, somain_sym_name);
-    if (somain == nullptr) return false;
-    LOGD("found symbol somain");
-
-    sonext = linker.getSymbAddress<SoInfo **>(sonext_sym_name);
-    if (sonext == nullptr) return false;
-    LOGD("found symbol sonext");
+    solinker = getStaticPointer<SoInfo>(linker, solinker_sym_name);
+    if (solinker == nullptr) {
+        solinker = getStaticPointer<SoInfo>(linker, solist_sym_name);
+        if (solinker == nullptr) return false;
+        LOGD("found symbol solist at %p", solinker);
+    } else {
+        LOGD("found symbol solinker at %p", solinker);
+    }
 
     auto *vdso = getStaticPointer<SoInfo>(linker, vdso_sym_name);
-    if (vdso != nullptr) LOGD("found symbol vdso");
+    if (vdso != nullptr) LOGD("found symbol vdso at %p", vdso);
 
     SoInfo::get_realpath_sym = reinterpret_cast<decltype(SoInfo::get_realpath_sym)>(
         linker.getSymbAddress("__dl__ZNK6soinfo12get_realpathEv"));
@@ -100,39 +105,39 @@ bool initialize() {
         linker.getSymbAddress("__dl__ZL23g_module_unload_counter"));
     if (g_module_unload_counter != nullptr) LOGD("found symbol g_module_unload_counter");
 
-    solist = getStaticPointer<SoInfo>(linker, solist_sym_name.data());
-    if (solist == nullptr) return false;
-    LOGD("found symbol solist");
+    somain = getStaticPointer<SoInfo>(linker, somain_sym_name.data());
+    if (somain == nullptr) return false;
+    LOGD("found symbol somain at %p", somain);
 
-    bool size_filed_found = false;
-    bool next_filed_found = false;
+    bool size_field_found = false;
+    bool next_field_found = false;
     const size_t linker_realpath_size = linker.name().size();
     for (size_t i = 0; i < size_block_range / sizeof(void *); i++) {
-        auto possible_field = reinterpret_cast<uintptr_t>(solist) + i * sizeof(void *);
-        auto possible_size_of_somain =
+        auto size_of_somain =
             *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(somain) + i * sizeof(void *));
-        if (!size_filed_found && possible_size_of_somain < size_maximal &&
-            possible_size_of_somain > size_minimal) {
+        if (!size_field_found && size_of_somain < size_maximal && size_of_somain > size_minimal) {
             SoInfo::field_size_offset = i * sizeof(void *);
             LOGD("field_size_offset is %zu * %zu = %p", i, sizeof(void *),
                  (void *) SoInfo::field_size_offset);
-            size_filed_found = true;
+            size_field_found = true;
         }
-        if (!next_filed_found &&
-            (*reinterpret_cast<void **>(possible_field) == somain ||
-             (vdso != nullptr && *reinterpret_cast<void **>(possible_field) == vdso))) {
+
+        auto field_of_solinker = reinterpret_cast<uintptr_t>(solinker) + i * sizeof(void *);
+        auto next_of_solinker = *reinterpret_cast<void **>(field_of_solinker);
+        if (!next_field_found && (next_of_solinker == somain ||
+                                  (vdso != nullptr && next_of_solinker == vdso))) {
             SoInfo::field_next_offset = i * sizeof(void *);
             LOGD("field_next_offset should be here %zu * %zu = %p", i, sizeof(void *),
                  (void *) SoInfo::field_next_offset);
-            next_filed_found = true;
+            next_field_found = true;
             if (SoInfo::get_realpath_sym != nullptr) break;
         }
-        if (size_filed_found && next_filed_found) {
-            std::string *realpath = reinterpret_cast<std::string *>(
-                reinterpret_cast<uintptr_t>(solist) + i * sizeof(void *));
-            if (realpath->size() == linker_realpath_size) {
+
+        if (size_field_found && next_field_found) {
+            std::string *realpath_of_solinker = reinterpret_cast<std::string *>(field_of_solinker);
+            if (realpath_of_solinker->size() == linker_realpath_size) {
                 char buffer[100];
-                strncpy(buffer, realpath->c_str(), linker_realpath_size);
+                strncpy(buffer, realpath_of_solinker->c_str(), linker_realpath_size);
                 buffer[linker_realpath_size] = '\0';
                 if (strcmp(linker.name().c_str(), buffer) == 0) {
                     SoInfo::field_realpath_offset = i * sizeof(void *);
@@ -144,16 +149,16 @@ bool initialize() {
         }
     }
 
-    return true;
+    return size_field_found && next_field_found;
 }
 
 bool dropSoPath(const char *target_path) {
     bool path_found = false;
-    if (solist == nullptr && !initialize()) {
-        LOGE("failed to initialize solist");
+    if (solinker == nullptr && !initialize()) {
+        LOGE("failed to initialize solist before dropping paths");
         return path_found;
     }
-    for (auto *iter = solist; iter; iter = iter->getNext()) {
+    for (auto *iter = solinker; iter; iter = iter->getNext()) {
         if (iter->getPath() && strstr(iter->getPath(), target_path)) {
             SoList::ProtectedDataGuard guard;
             LOGD("dropping solist record for %s with size %zu", iter->getPath(), iter->getSize());
@@ -168,8 +173,8 @@ bool dropSoPath(const char *target_path) {
 }
 
 void resetCounters(size_t load, size_t unload) {
-    if (solist == nullptr && !initialize()) {
-        LOGE("failed to initialize solist");
+    if (solinker == nullptr && !initialize()) {
+        LOGE("failed to initialize solist before resetting counters");
         return;
     }
     if (g_module_load_counter == nullptr || g_module_unload_counter == nullptr) {
