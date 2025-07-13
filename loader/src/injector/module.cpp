@@ -231,7 +231,8 @@ void ZygiskContext::sanitize_fds() {
     int dfd = dirfd(dir.get());
     for (dirent *entry; (entry = readdir(dir.get()));) {
         int fd = parse_int(entry->d_name);
-        if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) && fd != dfd) {
+        if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) &&
+            fd != dfd) {
             close(fd);
         }
     }
@@ -241,6 +242,7 @@ bool ZygiskContext::exempt_fd(int fd) {
     if ((flags & POST_SPECIALIZE) || (flags & SKIP_CLOSE_LOG_PIPE)) return true;
     if (!can_exempt_fd()) return false;
     exempted_fds.push_back(fd);
+    LOGV("exempted fd %d", fd);
     return true;
 }
 
@@ -411,6 +413,29 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
 
         // Unmount the root implementation for Zygote
         update_mount_namespace(zygiskd::MountNamespace::Clean);
+
+        auto dir = open_dir("/proc/self/fd");
+        for (dirent *entry; (entry = readdir(dir.get()));) {
+            int fd = parse_int(entry->d_name);
+            char path[PATH_MAX];
+            std::string fd_path = "/proc/self/fd/" + std::to_string(fd);
+            ssize_t len = readlink(fd_path.c_str(), path, sizeof(path) - 1);
+            if (len != -1) {
+                path[len] = '\0';
+            }
+            std::string path_found_from_fd = std::string(path);
+            if (path_found_from_fd.empty() || path_found_from_fd.contains(":[") ||
+                path_found_from_fd.starts_with("/dev/")) {
+                continue;
+            } else {
+                struct stat info_from_path;
+                if (stat(path, &info_from_path) == -1) {
+                    LOGW("file %s is inaccessible", path);
+                    exempt_fd(fd);
+                }
+            }
+        }
+
         g_hook->zygote_unmounted = true;
         LOGV("zygote process mounting points cleared");
     }
