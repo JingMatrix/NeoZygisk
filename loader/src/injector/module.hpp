@@ -322,7 +322,7 @@ struct HookContext {
     void *start_addr = nullptr;
     size_t block_size = 0;
     bool should_unmap = false;
-    bool zygote_unmounted = false;
+    zygiskd::MountNamespace zygote_mns = zygiskd::MountNamespace::Root;
     jint MODIFIER_NATIVE = 0;
     jmethodID member_getModifiers = nullptr;
     std::vector<lsplt::MapInfo> cached_map_infos = {};
