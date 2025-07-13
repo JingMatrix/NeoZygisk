@@ -405,7 +405,6 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
 
     info_flags = zygiskd::GetProcessFlags(args.app->uid);
 
-    bool updating_zygote_mns = false;
     if (g_hook->zygote_mns == zygiskd::MountNamespace::Root) {
         // Cache mount profiles if not done
         if (info_flags & IS_FIRST_PROCESS) {
@@ -432,21 +431,26 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
                 if (stat(path, &info_from_path) == -1) {
                     LOGV("Module file %s [fd=%d] is loaded by Zygote", path, fd);
                     exempt_fd(fd);
-                    if (!updating_zygote_mns) {
-                        g_hook->zygote_mns = zygiskd::MountNamespace::Module;
-                        updating_zygote_mns = true;
-                    }
+                    g_hook->zygote_mns = zygiskd::MountNamespace::Module;
                 }
             }
         }
+    } else if (g_hook->zygote_mns == zygiskd::MountNamespace::Module) {
+        // when nativeForkAndSpecialize_pre is called multiple times,
+        // we prefer to clean Zygote mounts before fork,
+        // though it's more efficient to do this in app_specialize_pre.
+        update_mount_namespace(zygiskd::MountNamespace::Clean);
+    }
 
+    if (g_hook->zygote_mns != zygiskd::MountNamespace::Root) {
         LOGV("zygote process mnt modified");
     }
 
     fork_pre();
     if (is_child()) {
         app_specialize_pre();
-    } else if (updating_zygote_mns) {
+    } else if (g_hook->zygote_mns == zygiskd::MountNamespace::Module) {
+        // Crucial call to avoid crashes in Zygote
         update_mount_namespace(g_hook->zygote_mns);
     }
 
