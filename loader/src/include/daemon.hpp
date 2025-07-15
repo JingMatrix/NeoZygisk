@@ -79,7 +79,7 @@ std::vector<Module> ReadModules();
 
 uint32_t GetProcessFlags(uid_t uid);
 
-void CacheMountNamespace(pid_t pid);
+void CacheMountNamespace(pid_t pid, bool forced = false);
 
 std::string UpdateMountNamespace(MountNamespace type);
 

@@ -9,6 +9,8 @@
 
 namespace zygiskd {
 static std::string TMP_PATH;
+static bool mount_namspace_cached = false;
+
 void Init(const char *path) { TMP_PATH = path; }
 
 std::string GetTmpPath() { return TMP_PATH; }
@@ -57,7 +59,9 @@ uint32_t GetProcessFlags(uid_t uid) {
     return socket_utils::read_u32(fd);
 }
 
-void CacheMountNamespace(pid_t pid) {
+void CacheMountNamespace(pid_t pid, bool forced) {
+    if (mount_namspace_cached && !forced) return;
+    mount_namspace_cached = true;
     UniqueFd fd = Connect(1);
     if (fd == -1) {
         PLOGE("CacheMountNamespace");
