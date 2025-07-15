@@ -231,7 +231,8 @@ void ZygiskContext::sanitize_fds() {
     int dfd = dirfd(dir.get());
     for (dirent *entry; (entry = readdir(dir.get()));) {
         int fd = parse_int(entry->d_name);
-        if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) && fd != dfd) {
+        if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) &&
+            fd != dfd) {
             close(fd);
         }
     }
@@ -241,6 +242,7 @@ bool ZygiskContext::exempt_fd(int fd) {
     if ((flags & POST_SPECIALIZE) || (flags & SKIP_CLOSE_LOG_PIPE)) return true;
     if (!can_exempt_fd()) return false;
     exempted_fds.push_back(fd);
+    LOGV("exempt fd %d", fd);
     return true;
 }
 
@@ -261,20 +263,60 @@ void ZygiskContext::fork_pre() {
     sigmask(SIG_BLOCK, SIGCHLD);
     pid = old_fork();
 
-    if (!is_child()) return;
+    if ((flags & SERVER_FORK_AND_SPECIALIZE) && !is_child()) return;
 
-    // Record all open fds
+    if (g_hook->zygote_mns != zygiskd::MountNamespace::Clean) {
+        if (!is_child()) {
+            // If zygote mns is not clean, then we have updated it before,
+            // and can thus skip the following check of accessibility
+            LOGV("zygote mns is not clean");
+            return;
+        } else if (flags & APP_FORK_AND_SPECIALIZE) {
+            // We must set clean mns for the child process before checking accessibility
+            update_mount_namespace(zygiskd::MountNamespace::Clean);
+        }
+    }
+
+    // Record all open fds, and check their accessibility under current mns
     auto dir = xopen_dir("/proc/self/fd");
+    char path[PATH_MAX];
     for (dirent *entry; (entry = readdir(dir.get()));) {
         int fd = parse_int(entry->d_name);
         if (fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size()) {
             close(fd);
             continue;
         }
-        allowed_fds[fd] = true;
+
+        std::string fd_path = "/proc/self/fd/" + std::to_string(fd);
+        ssize_t len = readlink(fd_path.c_str(), path, sizeof(path) - 1);
+        path[len == -1 ? 0 : len] = '\0';
+        std::string path_found_from_fd = std::string(path);
+        if (path_found_from_fd.empty() || path_found_from_fd.contains(":[") ||
+            path_found_from_fd.starts_with("/dev/")) {
+            allowed_fds[fd] = true;
+        } else {
+            struct stat info_from_path;
+            if (stat(path, &info_from_path) == -1) {
+                allowed_fds[fd] = false;
+                if (!is_child()) {
+                    LOGV("module file %s [fd=%d] is loaded by zygote", path, fd);
+                    // Avoid ReopenOrDetach this fd during zygote::forkApp
+                    g_hook->zygote_mns = zygiskd::MountNamespace::Module;
+                } else {
+                    // Avoid ReopenOrDetach this fd during child's specialization
+                    close(fd);
+                }
+            } else {
+                allowed_fds[fd] = true;
+            }
+        }
     }
     // The dirfd will be closed once out of scope
     allowed_fds[dirfd(dir.get())] = false;
+
+    if (!is_child() && (flags & APP_FORK_AND_SPECIALIZE)) {
+        update_mount_namespace(g_hook->zygote_mns);
+    }
 }
 
 void ZygiskContext::fork_post() {
@@ -329,7 +371,7 @@ void ZygiskContext::app_specialize_pre() {
         info_flags = zygiskd::GetProcessFlags(args.app->uid);
     }
 
-    if ((info_flags & IS_FIRST_PROCESS) && !g_hook->zygote_unmounted) {
+    if (info_flags & IS_FIRST_PROCESS) {
         zygiskd::CacheMountNamespace(getpid());
     }
 
@@ -403,22 +445,20 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
 
     info_flags = zygiskd::GetProcessFlags(args.app->uid);
 
-    if (!g_hook->zygote_unmounted) {
-        // Cache mount profiles if not done
-        if (info_flags & IS_FIRST_PROCESS) {
-            zygiskd::CacheMountNamespace(getpid());
-        }
+    if (g_hook->zygote_mns == zygiskd::MountNamespace::Root) {
+        zygiskd::CacheMountNamespace(getpid());
 
-        // Unmount the root implementation for Zygote
-        update_mount_namespace(zygiskd::MountNamespace::Clean);
-        g_hook->zygote_unmounted = true;
-        LOGV("zygote process mounting points cleared");
+        // Unmount the root mount namespace of Zygote
+        g_hook->zygote_mns = zygiskd::MountNamespace::Clean;
+        update_mount_namespace(g_hook->zygote_mns);
+        LOGV("mount points of zygote cleaned");
     }
 
     fork_pre();
     if (is_child()) {
         app_specialize_pre();
     }
+
     sanitize_fds();
 }
 
