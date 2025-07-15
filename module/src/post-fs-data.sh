@@ -5,6 +5,9 @@ if [ "$ZYGISK_ENABLED" ]; then
   exit 0
 fi
 
+# Copy NeoZygisk status to WebUI folder
+cp /data/adb/neozygisk/module.prop /data/adb/modules/zygisksu/webroot
+
 cd "$MODDIR"
 
 if [ "$(which magisk)" ]; then

@@ -112,11 +112,14 @@ extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'service.sh'      "$MODPATH"
 extract "$ZIPFILE" 'uninstall.sh'      "$MODPATH"
 extract "$ZIPFILE" 'zygisk-ctl.sh'   "$MODPATH"
+extract "$ZIPFILE" 'webroot/index.html' "$MODPATH"
 mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 
 mkdir "$MODPATH/bin"
 mkdir "$MODPATH/lib"
 mkdir "$MODPATH/lib64"
+mkdir "$MODPATH/webroot"
+mv "$MODPATH/index.html" "$MODPATH/webroot/index.html"
 mv "$MODPATH/zygisk-ctl.sh" "$MODPATH/bin/zygisk-ctl"
 
 if [ "$ARCH" = "x86" ] || [ "$ARCH" = "x64" ]; then

@@ -1,0 +1,305 @@
+<!DOCTYPE html><html lang="en" class="light">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>NeoZygisk Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
+  <style>
+    * {
+      transition: background 0.4s, color 0.4s;
+    }
+    .light {
+      --bg: #ffe4f0;
+      --text: #2b2b2b;
+      --card: #fff0f6;
+      --accent: #ec4899;
+    }
+    .dark {
+      --bg: #111112;
+      --text: #f0f0f0;
+      --card: #1a1a1d;
+      --accent: #ec4899;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+    }
+    .card {
+      background: var(--card);
+      border-radius: .75rem;
+      padding: 1.25rem;
+      box-shadow: 0 2px 15px rgba(0, 0, 0, 0.15);
+      border: 2px solid var(--accent);
+      animation: borderPulse 3s linear infinite;
+    }
+    @keyframes borderPulse {
+      0% { border-color: var(--accent); }
+      50% { border-color: transparent; }
+      100% { border-color: var(--accent); }
+    }
+    .card:hover {
+      transform: translateY(-2px);
+    }
+    .tab-btn {
+      padding: .5rem 1rem;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .tab-content {
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    @keyframes fadeIn {
+      from {opacity:0;} to {opacity:1;}
+    }
+    @keyframes introFade {
+      0% {opacity: 0; transform: scale(0.8);}
+      50% {opacity: 1; transform: scale(1.1);}
+      100% {opacity: 0; transform: scale(0.95);}
+    }
+    .intro {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      animation: introFade 2.8s ease forwards;
+    }
+    .intro-logo {
+      font-size: 6rem;
+      animation: spinDNA 2s ease-in-out infinite alternate;
+    }
+    @keyframes spinDNA {
+      0% {transform: rotate(-360deg) scale(0.6); opacity: 0;}
+      50% {transform: rotate(15deg) scale(1.2); opacity: 1;}
+      100% {transform: rotate(0deg) scale(1); opacity: 1;}
+    }
+  </style>
+</head>
+<body class="min-h-screen p-6">
+  <div class="intro" id="intro">
+    <div class="intro-logo">🧬</div>
+  </div>  <header class="flex justify-between mb-6">
+    <h1 class="text-2xl font-bold flex items-center gap-2">
+      <span data-i18n="dashboard_title">NeoZygisk Dashboard</span>
+    </h1>
+    <button id="themeToggle" class="material-symbols-outlined text-3xl">light_mode</button>
+  </header>  <div class="mb-4 flex space-x-4">
+    <button class="tab-btn active" data-tab="status" data-i18n="status">Status</button>
+    <button class="tab-btn" data-tab="zygoteDaemon64" data-i18n="zygote64">Zygote64 & Daemon64</button>
+    <button class="tab-btn" data-tab="zygoteDaemon32" data-i18n="zygote32">Zygote32 & Daemon32</button>
+  </div>  <div id="status" class="tab-content active card">
+    <div class="row mb-4">
+      <span class="material-symbols-outlined text-pink-500">android</span>
+      <strong data-i18n="monitor">Monitor:</strong> <span id="monitorVal">Loading...</span>
+    </div>
+    <div class="row mb-4">
+      <span class="material-symbols-outlined text-pink-500">science</span>
+      <strong data-i18n="version">Version:</strong> <span id="versionVal">-</span>
+    </div>
+    <div class="card mt-4">
+      <h2 class="text-lg font-semibold flex items-center">
+        <span class="material-symbols-outlined text-pink-500">genetics</span> <span data-i18n="about" class="text-pink-500">About NeoZygisk</span>
+      </h2>
+      <p data-i18n="about_text">NeoZygisk is a lightweight Zygote injection module based on ptrace, compatible with Magisk, APatch, and KernelSU. It serves as a replacement for Magisk's built-in Zygisk, offering clean, minimal, and synchronized support for Zygisk API without leaving injection traces.</p>
+    </div>
+    <div class="mt-6 flex justify-center">
+      <select id="languageSelect" class="rounded px-2 py-1 bg-white text-black dark:bg-black dark:text-white">
+        <option value="en">English</option>
+        <option value="zh">简体中文</option>
+      </select>
+    </div>
+    <div class="text-center text-sm text-gray-500 mt-6" data-i18n="credits">Designed by 𝗠𝗘𝗢𝗪𝗻𝗮 💅 & JingMatrix</div>
+  </div>  <div id="zygoteDaemon64" class="tab-content card"></div>
+  <div id="zygoteDaemon32" class="tab-content card"></div>  
+<script>
+  const translations = {
+    en: {
+      dashboard_title: "NeoZygisk Dashboard",
+      status: "Status",
+      zygote64: "Zygote64 & Daemon64",
+      zygote32: "Zygote32 & Daemon32",
+      monitor: "Monitor:",
+      version: "Module Version:",
+      about: "About NeoZygisk",
+      about_text: "NeoZygisk is a lightweight Zygote injection module based on ptrace, compatible with Magisk, APatch, and KernelSU. It serves as a replacement for Magisk's built-in Zygisk, offering clean, minimal, and synchronized support for Zygisk API without leaving injection traces.",
+      credits: "Designed by 𝗠𝗘𝗢𝗪𝗻𝗮 💅 & JingMatrix"
+    },
+    zh: {
+      dashboard_title: "NeoZygisk 控制台",
+      status: "状态",
+      zygote64: "Zygote64 与 Daemon64",
+      zygote32: "Zygote32 与 Daemon32",
+      monitor: "监控:",
+      version: "模块版本:",
+      about: "关于 NeoZygisk",
+      about_text: "NeoZygisk 是一个基于 ptrace 的轻量级 Zygote 注入模块，兼容 Magisk、APatch 和 KernelSU。它可以替代 Magisk 内置的 Zygisk，为 Zygisk API 提供简洁、精简且同步的支持，且不会留下注入痕迹。",
+      credits: "设计者：𝗠𝗘𝗢𝗪𝗻𝗮 💅 & JingMatrix"
+    }
+  };
+
+  function updateLang(lang) {
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const key = el.dataset.i18n;
+      if (translations[lang] && translations[lang][key]) {
+        el.innerHTML = translations[lang][key];
+      }
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => document.getElementById('intro').remove(), 2800);
+
+    const html = document.documentElement;
+    const themeToggle = document.getElementById('themeToggle');
+    const languageSelect = document.getElementById('languageSelect');
+    const tabs = document.querySelectorAll('.tab-btn');
+    const contents = document.querySelectorAll('.tab-content');
+
+    languageSelect.addEventListener('change', () => updateLang(languageSelect.value));
+
+    if (localStorage.theme === 'dark') {
+      html.classList.replace('light', 'dark');
+      themeToggle.textContent = 'dark_mode';
+    }
+
+    themeToggle.addEventListener('click', () => {
+      const isDark = html.classList.contains('light');
+      html.classList.toggle('light', !isDark);
+      html.classList.toggle('dark', isDark);
+      themeToggle.textContent = isDark ? 'dark_mode' : 'light_mode';
+      localStorage.theme = isDark ? 'dark' : 'light';
+    });
+
+    tabs.forEach(btn => btn.addEventListener('click', () => {
+      tabs.forEach(b => b.classList.remove('active'));
+      contents.forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.tab).classList.add('active');
+    }));
+
+    // Parse and render module.prop
+    fetch('module.prop')
+      .then(res => res.text())
+      .then(text => {
+        const lines = text.trim().split('\n');
+        let currentSection = null;
+        const state = {
+          version: '-',
+          monitor: '',
+          zygote64: { status: '', root: '', modules: [] },
+          daemon64: { status: '', root: '', modules: [] },
+          zygote32: { status: '', root: '', modules: [] },
+          daemon32: { status: '', root: '', modules: [] }
+        };
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+
+          if (line.startsWith('version=')) {
+            state.version = line.split('=')[1].trim();
+          } else if (line.startsWith('monitor:')) {
+            state.monitor = line.split(':')[1].trim();
+          } else if (line.startsWith('zygote64:')) {
+            state.zygote64.status = line.split(':')[1].trim();
+            currentSection = 'zygote64';
+          } else if (line.startsWith('daemon64:')) {
+            state.daemon64.status = line.split(':')[1].trim();
+            currentSection = 'daemon64';
+          } else if (line.startsWith('zygote32:')) {
+            state.zygote32.status = line.split(':')[1].trim();
+            currentSection = 'zygote32';
+          } else if (line.startsWith('daemon32:')) {
+            state.daemon32.status = line.split(':')[1].trim();
+            currentSection = 'daemon32';
+          } else if (line.startsWith('Root:')) {
+            if (currentSection) {
+              state[currentSection].root = line.split(':')[1].trim();
+            }
+          } else if (line.startsWith('Module')) {
+            let modules = [];
+            while (++i < lines.length) {
+              const modLine = lines[i].trim();
+              if (modLine === '' || modLine.includes(':')) {
+                i--; // Step back if it's another section
+                break;
+              }
+              modules.push(modLine);
+            }
+            if (currentSection) {
+              state[currentSection].modules = modules;
+            }
+          }
+        }
+
+        // Only show existing values
+        const renderSection = (section) => {
+          let html = '';
+
+          if (state[section].status) {
+            html += `<div class="mb-2 flex items-center gap-2">
+              <span class="material-symbols-outlined text-pink-500">bolt</span>
+              <strong>Status:</strong> ${state[section].status}
+            </div>`;
+          }
+
+          if (state[section].root) {
+            html += `<div class="mb-2 flex items-center gap-2">
+              <span class="material-symbols-outlined text-pink-500">tag</span>
+              <strong>Root:</strong> ${state[section].root}
+            </div>`;
+          }
+
+          if (state[section].modules.length > 0) {
+            html += `<div class="flex items-start gap-2">
+              <span class="material-symbols-outlined text-pink-500 mt-1">cardiology</span>
+              <div>
+                <strong>Modules:</strong>
+                <ul class="list-disc list-inside ml-4">`;
+            state[section].modules.forEach(mod => {
+              html += `<li>${mod}</li>`;
+            });
+            html += `</ul>
+              </div>
+            </div>`;
+          }
+
+          return html || '<div class="text-gray-500">No data available</div>';
+        };
+
+        document.getElementById('versionVal').textContent = state.version;
+        document.getElementById('monitorVal').textContent = state.monitor;
+
+        document.getElementById('zygoteDaemon64').innerHTML = `
+          <h2 class="text-xl font-bold mb-4">Zygote64</h2>
+          ${renderSection('zygote64')}
+          <hr class="my-4">
+          <h2 class="text-xl font-bold mb-4">Daemon64</h2>
+          ${renderSection('daemon64')}
+        `;
+
+        document.getElementById('zygoteDaemon32').innerHTML = `
+          <h2 class="text-xl font-bold mb-4">Zygote32</h2>
+          ${renderSection('zygote32')}
+          <hr class="my-4">
+          <h2 class="text-xl font-bold mb-4">Daemon32</h2>
+          ${renderSection('daemon32')}
+        `;
+      })
+      .catch(err => {
+        console.error("Failed to load module.prop", err);
+      });
+  });
+</script>
+</body>
+</html>
