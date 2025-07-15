@@ -304,7 +304,7 @@ void ZygiskContext::fork_pre() {
                     g_hook->zygote_mns = zygiskd::MountNamespace::Module;
                 } else {
                     // Avoid ReopenOrDetach this fd during child's specialization
-                    if (!exempt_fd(fd)) close(fd);
+                    close(fd);
                 }
             } else {
                 allowed_fds[fd] = true;
