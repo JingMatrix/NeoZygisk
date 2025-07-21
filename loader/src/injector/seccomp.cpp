@@ -17,14 +17,23 @@
 #include "zygisk.hpp"
 
 /**
- * @brief Checks if seccomp filters are already being enforced by the system.
+ * @brief Checks if the seccomp-based clearing method should be skipped.
  *
- * This prevents our injection from interfering with existing, more robust security
- * mechanisms. It does this by checking for the "Seccomp_filters:" field in
- * /proc/self/status.
+ * This function's purpose is to facilitate a hybrid strategy for clearing
+ * the ptrace_message. The seccomp method, while effective on older kernels,
+ * creates a detectable artifact on newer kernels (Linux 5.9+): it increments
+ * the filter count in the "Seccomp_filters:" field of /proc/self/status.
  *
- * @return True if seccomp injection should be skipped, false otherwise.
+ * This function checks for the *existence* of that field.
+ * - If the field exists, it implies a newer kernel where this method is
+ *   detectable. We should therefore SKIP this method and rely on a different
+ *   one (e.g., PTRACE_SYSCALL) which is stealthier on new kernels.
+ * - If the field does not exist, it implies an older kernel where this seccomp
+ *   method is probably necessary and potentially invisible.
+ *
+ * @return True if the seccomp method should be skipped, false if it should be used.
  */
+
 static bool should_skip_seccomp_injection() {
     // Use std::ifstream for automatic resource management (RAII).
     std::ifstream status_file("/proc/self/status");
