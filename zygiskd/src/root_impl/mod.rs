@@ -6,7 +6,6 @@ mod magisk;
 pub enum RootImpl {
     None,
     TooOld,
-    Abnormal,
     Multiple,
     APatch,
     KernelSU,
@@ -33,7 +32,6 @@ pub fn setup() {
         (None, Some(ksu_version), None) => match ksu_version {
             kernelsu::Version::Supported => RootImpl::KernelSU,
             kernelsu::Version::TooOld => RootImpl::TooOld,
-            kernelsu::Version::Abnormal => RootImpl::Abnormal,
         },
         (None, None, Some(magisk_version)) => match magisk_version {
             magisk::Version::Supported => RootImpl::Magisk,
