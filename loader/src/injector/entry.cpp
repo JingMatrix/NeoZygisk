@@ -17,4 +17,5 @@ void entry(void *addr, size_t size, const char *path) {
 
     LOGI("Start hooking");
     hook_entry(addr, size);
+    send_seccomp_event_if_needed();
 }

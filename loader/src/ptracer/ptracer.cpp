@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "daemon.hpp"
-#include "utils.hpp"
 #include "logging.hpp"
+#include "utils.hpp"
 
 bool inject_on_main(int pid, const char *lib_path) {
     LOGI("injecting %s to zygote %d", lib_path, pid);
@@ -206,7 +206,7 @@ bool trace_zygote(int pid) {
     }
     int status;
     LOGI("tracing %d (tracer %d)", pid, getpid());
-    if (ptrace(PTRACE_SEIZE, pid, 0, PTRACE_O_EXITKILL) == -1) {
+    if (ptrace(PTRACE_SEIZE, pid, 0, PTRACE_O_EXITKILL | PTRACE_O_TRACESECCOMP) == -1) {
         PLOGE("seize");
         return false;
     }
@@ -230,6 +230,9 @@ bool trace_zygote(int pid) {
             WAIT_OR_DIE
             if (STOPPED_WITH(SIGCONT, 0)) {
                 LOGD("received SIGCONT");
+                // Simple workaround to reset PTRACE_GETEVENTMSG for GKI 2.0 devices
+                ptrace(PTRACE_SYSCALL, pid, 0, 0);
+                WAIT_OR_DIE
                 ptrace(PTRACE_DETACH, pid, 0, SIGCONT);
             }
         } else {
