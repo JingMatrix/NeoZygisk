@@ -1,31 +1,31 @@
-#include <vector>
+#include "utils.hpp"
+
+#include <dlfcn.h>
+#include <elf.h>
+#include <fcntl.h>
+#include <link.h>
+#include <sched.h>
+#include <signal.h>
+#include <sys/auxv.h>
 #include <sys/mman.h>
+#include <sys/ptrace.h>
+#include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <sys/uio.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <array>
 #include <cinttypes>
-#include <sys/ptrace.h>
-#include <unistd.h>
-#include <sys/uio.h>
-#include <sys/auxv.h>
-#include <elf.h>
-#include <link.h>
-#include <vector>
-#include <string>
-#include <sys/mman.h>
-#include <sys/wait.h>
-#include <cstdlib>
 #include <cstdio>
-#include <dlfcn.h>
-#include <signal.h>
-#include <sstream>
-#include <ios>
+#include <cstdlib>
 #include <cstring>
-#include <sys/stat.h>
+#include <ios>
+#include <sstream>
+#include <string>
+#include <vector>
 
-#include "utils.hpp"
 #include "logging.hpp"
-#include <sched.h>
-#include <fcntl.h>
 
 bool switch_mnt_ns(int pid, int *fd) {
     int nsfd, old_nsfd = -1;
@@ -34,7 +34,8 @@ bool switch_mnt_ns(int pid, int *fd) {
         if (fd != nullptr) {
             nsfd = *fd;
             *fd = -1;
-        } else return false;
+        } else
+            return false;
         path = "/proc/self/fd/";
         path += std::to_string(nsfd);
     } else {
@@ -64,7 +65,7 @@ bool switch_mnt_ns(int pid, int *fd) {
     return true;
 }
 
-std::vector<MapInfo> MapInfo::Scan(const std::string& pid) {
+std::vector<MapInfo> MapInfo::Scan(const std::string &pid) {
     constexpr static auto kPermLength = 5;
     constexpr static auto kMapEntry = 7;
     std::vector<MapInfo> info;
@@ -85,8 +86,8 @@ std::vector<MapInfo> MapInfo::Scan(const std::string& pid) {
             std::array<char, kPermLength> perm{'\0'};
             int path_off;
             if (sscanf(line, "%" PRIxPTR "-%" PRIxPTR " %4s %" PRIxPTR " %x:%x %lu %n%*s", &start,
-                    &end, perm.data(), &off, &dev_major, &dev_minor, &inode,
-                    &path_off) != kMapEntry) {
+                       &end, perm.data(), &off, &dev_major, &dev_minor, &inode,
+                       &path_off) != kMapEntry) {
                 continue;
             }
             while (path_off < read && isspace(line[path_off])) path_off++;
@@ -104,14 +105,8 @@ std::vector<MapInfo> MapInfo::Scan(const std::string& pid) {
 
 ssize_t write_proc(int pid, uintptr_t remote_addr, const void *buf, size_t len) {
     LOGV("write to remote addr %" PRIxPTR " size %zu", remote_addr, len);
-    struct iovec local{
-            .iov_base = (void *) buf,
-            .iov_len = len
-    };
-    struct iovec remote{
-            .iov_base = (void *) remote_addr,
-            .iov_len = len
-    };
+    struct iovec local{.iov_base = (void *) buf, .iov_len = len};
+    struct iovec remote{.iov_base = (void *) remote_addr, .iov_len = len};
     auto l = process_vm_writev(pid, &local, 1, &remote, 1, 0);
     if (l == -1) {
         PLOGE("process_vm_writev");
@@ -122,14 +117,8 @@ ssize_t write_proc(int pid, uintptr_t remote_addr, const void *buf, size_t len) 
 }
 
 ssize_t read_proc(int pid, uintptr_t remote_addr, void *buf, size_t len) {
-    struct iovec local{
-            .iov_base = (void *) buf,
-            .iov_len = len
-    };
-    struct iovec remote{
-            .iov_base = (void *) remote_addr,
-            .iov_len = len
-    };
+    struct iovec local{.iov_base = (void *) buf, .iov_len = len};
+    struct iovec remote{.iov_base = (void *) remote_addr, .iov_len = len};
     auto l = process_vm_readv(pid, &local, 1, &remote, 1, 0);
     if (l == -1) {
         PLOGE("process_vm_readv");
@@ -147,8 +136,8 @@ bool get_regs(int pid, struct user_regs_struct &regs) {
     }
 #elif defined(__aarch64__) || defined(__arm__)
     struct iovec iov = {
-            .iov_base = &regs,
-            .iov_len = sizeof(struct user_regs_struct),
+        .iov_base = &regs,
+        .iov_len = sizeof(struct user_regs_struct),
     };
     if (ptrace(PTRACE_GETREGSET, pid, NT_PRSTATUS, &iov) == -1) {
         PLOGE("getregs");
@@ -166,8 +155,8 @@ bool set_regs(int pid, struct user_regs_struct &regs) {
     }
 #elif defined(__aarch64__) || defined(__arm__)
     struct iovec iov = {
-            .iov_base = &regs,
-            .iov_len = sizeof(struct user_regs_struct),
+        .iov_base = &regs,
+        .iov_len = sizeof(struct user_regs_struct),
     };
     if (ptrace(PTRACE_SETREGSET, pid, NT_PRSTATUS, &iov) == -1) {
         PLOGE("setregs");
@@ -178,7 +167,7 @@ bool set_regs(int pid, struct user_regs_struct &regs) {
 }
 
 std::string get_addr_mem_region(std::vector<MapInfo> &info, uintptr_t addr) {
-    for (auto &map: info) {
+    for (auto &map : info) {
         if (map.start <= addr && map.end > addr) {
             auto s = std::string(map.path);
             s += ' ';
@@ -191,9 +180,8 @@ std::string get_addr_mem_region(std::vector<MapInfo> &info, uintptr_t addr) {
     return "<unknown>";
 }
 
-
 void *find_module_return_addr(std::vector<MapInfo> &info, std::string_view suffix) {
-    for (auto &map: info) {
+    for (auto &map : info) {
         if ((map.perms & PROT_EXEC) == 0 && map.path.ends_with(suffix)) {
             return (void *) map.start;
         }
@@ -202,7 +190,7 @@ void *find_module_return_addr(std::vector<MapInfo> &info, std::string_view suffi
 }
 
 void *find_module_base(std::vector<MapInfo> &info, std::string_view suffix) {
-    for (auto &map: info) {
+    for (auto &map : info) {
         if (map.offset == 0 && map.path.ends_with(suffix)) {
             return (void *) map.start;
         }
@@ -210,11 +198,8 @@ void *find_module_base(std::vector<MapInfo> &info, std::string_view suffix) {
     return nullptr;
 }
 
-void *find_func_addr(
-        std::vector<MapInfo> &local_info,
-        std::vector<MapInfo> &remote_info,
-        std::string_view module,
-        std::string_view func) {
+void *find_func_addr(std::vector<MapInfo> &local_info, std::vector<MapInfo> &remote_info,
+                     std::string_view module, std::string_view func) {
     auto lib = dlopen(module.data(), RTLD_NOW);
     if (lib == nullptr) {
         LOGE("failed to open lib %s: %s", module.data(), dlerror());
@@ -260,11 +245,11 @@ uintptr_t push_string(int pid, struct user_regs_struct &regs, const char *str) {
     return addr;
 }
 
-uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr,
-                 std::vector<long> &args) {
+uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr,
+                      uintptr_t return_addr, std::vector<long> &args) {
     align_stack(regs);
     LOGV("calling remote function %" PRIxPTR " args %zu", func_addr, args.size());
-    for (auto &a: args) {
+    for (auto &a : args) {
         LOGV("arg %p", (void *) a);
     }
 #if defined(__x86_64__)
@@ -318,7 +303,7 @@ uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_add
     if (args.size() > 8) {
         auto remain = (args.size() - 8) * sizeof(long);
         align_stack(regs, remain);
-        write_proc(pid, (uintptr_t)regs.REG_SP, args.data(), remain);
+        write_proc(pid, (uintptr_t) regs.REG_SP, args.data(), remain);
     }
     regs.regs[30] = return_addr;
     regs.REG_IP = func_addr;
@@ -329,7 +314,7 @@ uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_add
     if (args.size() > 4) {
         auto remain = (args.size() - 4) * sizeof(long);
         align_stack(regs, remain);
-        write_proc(pid, (uintptr_t)regs.REG_SP, args.data(), remain);
+        write_proc(pid, (uintptr_t) regs.REG_SP, args.data(), remain);
     }
     regs.uregs[14] = return_addr;
     regs.REG_IP = func_addr;
@@ -359,7 +344,8 @@ uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_add
         }
         return regs.REG_RET;
     } else {
-        LOGE("stopped by other reason %s at addr %p", parse_status(status).c_str(), (void*) regs.REG_IP);
+        LOGE("stopped by other reason %s at addr %p", parse_status(status).c_str(),
+             (void *) regs.REG_IP);
     }
     return 0;
 }
@@ -382,21 +368,89 @@ int fork_dont_care() {
     return pid;
 }
 
-void wait_for_trace(int pid, int* status, int flags) {
+/**
+ * @brief Skips the currently trapped syscall for a tracee.
+ *
+ * When a tracee is stopped due to a PTRACE_EVENT_SECCOMP, it is paused *before*
+ * the syscall is executed. This function prevents the syscall from ever running
+ * by modifying the tracee's registers.
+ *
+ * It sets the syscall number register to -1, which is an invalid syscall number.
+ * The kernel recognizes this and skips the execution, causing the syscall to
+ * immediately return with -ENOSYS, without any side effects.
+ *
+ * For ARM/ARM64, it also uses architecture-specific ptrace requests as a
+ * fallback/alternative method to ensure the syscall is skipped. These might not
+alway
+s
+ * work on all kernel versions, so their errors are ignored.
+ *
+ * @param pid The process ID of the tracee.
+ */
+void tracee_skip_syscall(int pid) {
+    user_regs_struct regs;
+    if (!get_regs(pid, regs)) {
+        LOGE("tracee_skip_syscall: failed to get registers");
+        exit(1);
+    }
+
+    // Set the syscall number to an invalid value (-1).
+    // The kernel will see this and skip the syscall execution.
+    regs.REG_SYSNR = -1;
+
+    if (!set_regs(pid, regs)) {
+        LOGE("tracee_skip_syscall: failed to set registers to skip syscall");
+        exit(1);
+    }
+
+    // For ARM architectures, there are specific ptrace requests to modify the
+    // syscall number. We attempt these as well, but don't check for errors
+    // as they may not be supported on all kernels. The register modification
+    // above is the primary method.
+#if defined(__aarch64__)
+    int sysnr = -1;
+    struct iovec iov = {.iov_base = &sysnr, .iov_len = sizeof(sysnr)};
+    ptrace(PTRACE_SETREGSET, pid, NT_ARM_SYSTEM_CALL, &iov);
+#elif defined(__arm__)
+    ptrace(PTRACE_SET_SYSCALL, pid, 0, (void *) -1);
+#endif
+}
+
+/**
+ * @brief Waits for a ptrace event, handling seccomp events specifically.
+ *
+ * This is a wrapper around waitpid that handles EINTR and automatically
+ * continues the process after a PTRACE_EVENT_SECCOMP.
+ *
+ * @param pid The PID to wait for.
+ * @param status A pointer to an integer where the status will be stored.
+ * @param flags Flags for waitpid.
+ */
+void wait_for_trace(int pid, int *status, int flags) {
     while (true) {
-        auto result = waitpid(pid, status, flags);
-        if (result == -1) {
+        if (waitpid(pid, status, flags) == -1) {
             if (errno == EINTR) {
-                continue;
-            } else {
-                PLOGE("wait %d failed", pid);
-                exit(1);
+                continue;  // Interrupted by a signal, just retry.
             }
-        }
-        if (!WIFSTOPPED(*status)) {
-            LOGE("process %d not stopped for trace: %s, exit", pid, parse_status(*status).c_str());
+            PLOGE("waitpid(%d) failed", pid);
             exit(1);
         }
+
+        // Check if the stop was caused by a PTRACE_EVENT_SECCOMP.
+        if (*status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
+            tracee_skip_syscall(pid);
+            ptrace(PTRACE_CONT, pid, 0, 0);
+            continue;  // Continue waiting for the next *real* stop event.
+        }
+
+        // If the process terminated or signaled instead of stopping, it's an error.
+        if (!WIFSTOPPED(*status)) {
+            LOGE("Process %d did not stop as expected: %s. Exiting.", pid,
+                 parse_status(*status).c_str());
+            exit(1);
+        }
+
+        // It's a valid stop event that we need to handle, so we return.
         return;
     }
 }
