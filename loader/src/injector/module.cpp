@@ -366,10 +366,21 @@ void ZygiskContext::run_modules_post() {
 }
 
 void ZygiskContext::app_specialize_pre() {
-    if (!(flags & APP_FORK_AND_SPECIALIZE)) {
-        // Avoid fetching process flags twice
-        info_flags = zygiskd::GetProcessFlags(args.app->uid);
+    uid_t uid = args.app->uid;
+    // Correct uid for isolated services
+    if (uid >= AID_ISOLATED_START && uid <= AID_ISOLATED_END && args.app->app_data_dir) {
+        const char *data_dir = nullptr;
+        data_dir = env->GetStringUTFChars(args.app->app_data_dir, nullptr);
+        if (data_dir != nullptr) {
+            struct stat st;
+            if (stat(data_dir, &st) != -1) {
+                uid = st.st_uid;
+                LOGD("identify isolated service [uid:%d, data_dir:%s]", uid, data_dir);
+            }
+            env->ReleaseStringUTFChars(args.app->app_data_dir, data_dir);
+        }
     }
+    info_flags = zygiskd::GetProcessFlags(uid);
 
     if (info_flags & IS_FIRST_PROCESS) {
         zygiskd::CacheMountNamespace(getpid());
@@ -442,8 +453,6 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
     process = env->GetStringUTFChars(args.app->nice_name, nullptr);
     LOGV("pre forkAndSpecialize [%s]\n", process);
     flags |= APP_FORK_AND_SPECIALIZE;
-
-    info_flags = zygiskd::GetProcessFlags(args.app->uid);
 
     if (g_hook->zygote_mns == zygiskd::MountNamespace::Root) {
         zygiskd::CacheMountNamespace(getpid());

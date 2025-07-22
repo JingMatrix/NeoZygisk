@@ -7,6 +7,11 @@
 #include <string>
 #include <string_view>
 
+// Reference:
+// https://cs.android.com/android/platform/superproject/main/+/main:system/core/libcutils/include/private/android_filesystem_config.h
+#define AID_ISOLATED_START 90000 /* start of uids for fully isolated sandboxed processes */
+#define AID_ISOLATED_END 99999   /* end of uids for fully isolated sandboxed processes */
+
 #define DISALLOW_COPY_AND_MOVE(clazz)                                                              \
     clazz(const clazz &) = delete;                                                                 \
     clazz(clazz &&) = delete;
