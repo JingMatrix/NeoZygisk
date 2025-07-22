@@ -387,8 +387,7 @@ void ZygiskContext::app_specialize_pre() {
 void ZygiskContext::app_specialize_post() {
     run_modules_post();
 
-    if ((info_flags & (PROCESS_IS_MANAGER | PROCESS_ROOT_IS_MAGISK)) ==
-        (PROCESS_IS_MANAGER | PROCESS_ROOT_IS_MAGISK)) {
+    if ((info_flags & PROCESS_IS_MANAGER) == PROCESS_IS_MANAGER) {
         LOGI("current uid %d is manager!", args.app->uid);
         setenv("ZYGISK_ENABLED", "1", 1);
     }
