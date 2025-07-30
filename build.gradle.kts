@@ -34,7 +34,9 @@ val androidMinSdkVersion by extra(26)
 val androidTargetSdkVersion by extra(36)
 val androidCompileSdkVersion by extra(36)
 val androidBuildToolsVersion by extra("36.0.0")
-val androidCompileNdkVersion by extra("29.0.13113456")
+// Don't update NDK unless after careful and detailed tests,
+// as explained in https://github.com/JingMatrix/NeoZygisk/pull/36
+val androidCompileNdkVersion by extra("27.2.12479018")
 val androidSourceCompatibility by extra(JavaVersion.VERSION_21)
 val androidTargetCompatibility by extra(JavaVersion.VERSION_21)
 
