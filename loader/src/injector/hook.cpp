@@ -138,8 +138,12 @@ DCL_HOOK_FUNC(static int, pthread_attr_setstacksize, void *target, size_t size) 
         if (g_hook->should_unmap) {
             void *start_addr = g_hook->start_addr;
             size_t block_size = g_hook->block_size;
-            delete g_hook;
 
+            if (g_hook->should_spoof_maps) {
+                spoof_virtual_maps("jit-cache-zygisk", true);
+            }
+
+            delete g_hook;
             // Because both `pthread_attr_setstacksize` and `munmap` have the same function
             // signature, we can use `musttail` to let the compiler reuse our stack frame and thus
             // `munmap` will directly return to the caller of `pthread_attr_setstacksize`.
@@ -385,7 +389,7 @@ void HookContext::restore_zygote_hook(JNIEnv *env) {
 void hook_entry(void *start_addr, size_t block_size) {
     g_hook = new HookContext(start_addr, block_size);
     g_hook->hook_plt();
-    clean_trace(zygiskd::GetTmpPath().data(), 1, 0, false);
+    clean_linker_trace(zygiskd::GetTmpPath().data(), 1, 0);
 }
 
 void hookJniNativeMethods(JNIEnv *env, const char *clz, JNINativeMethod *methods, int numMethods) {

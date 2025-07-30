@@ -8,33 +8,60 @@
 #include "solist.hpp"
 #include "zygisk.hpp"
 
-void clean_trace(const char *path, size_t load, size_t unload, bool spoof_maps) {
-    LOGD("cleaning trace for path %s", path);
-
+void clean_linker_trace(const char *path, size_t load, size_t unload) {
+    LOGD("cleaning linker trace for path %s", path);
     if (load > 0 || unload > 0) SoList::resetCounters(load, unload);
-    bool path_found = SoList::dropSoPath(path);
-    if (!path_found || !spoof_maps) return;
+    SoList::dropSoPath(path);
+}
 
-    LOGD("spoofing virtual maps for %s", path);
+void spoof_virtual_maps(const char *path, bool clear_write_permission) {
     // spoofing map names is futile in Android, we do it simply
-    // to avoid Zygisk detections based on string comparison
+    // to avoid trivial Zygisk detections based on string comparison.
     for (auto &map : lsplt::MapInfo::Scan()) {
+        void *addr = (void *) map.start;
+        size_t size = map.end - map.start;
+        bool is_neozygisk =
+            (strstr(map.path.c_str(), "libzygisk.so") && (map.perms & PROT_EXEC) != 1);
+        if (is_neozygisk) LOGW("found neozygisk at %p with size %zu", addr, size);
+
         if (strstr(map.path.c_str(), path)) {
-            void *addr = (void *) map.start;
-            size_t size = map.end - map.start;
+            LOGD("spoofing entry path contaning string %s", map.path.c_str());
+            // Create an anonymous mapping to hold a copy of the original data
             void *copy = mmap(nullptr, size, PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
             if (copy == MAP_FAILED) {
                 LOGE("failed to backup block %s [%p, %p]", map.path.c_str(), addr,
                      (void *) map.end);
                 continue;
             }
-
+            // Ensure the original mapping is readable before copying
             if ((map.perms & PROT_READ) == 0) {
                 mprotect(addr, size, PROT_READ);
             }
             memcpy(copy, addr, size);
-            mremap(copy, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, addr);
+            // Overwrite the original mapping with our anonymous copy
+            if (mremap(copy, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, addr) == MAP_FAILED) {
+                LOGE("mremap failed for %s [%p, %p]", map.path.c_str(), addr, (void *) map.end);
+            }
+            // The backup copy is now at the original address, we can unmap our temporary one.
+            // Note: The man page for mremap is ambiguous on whether the old mapping at 'copy'
+            // is unmapped. To be safe and avoid potential leaks, we explicitly unmap it.
+            // munmap(copy, size);
+            // Restore the original permissions
             mprotect(addr, size, map.perms);
+        }
+
+        if (clear_write_permission && map.path.size() > 0 &&
+            (map.perms & (PROT_READ | PROT_WRITE | PROT_EXEC)) ==
+                (PROT_READ | PROT_WRITE | PROT_EXEC)) {
+            LOGD("clearing write permission for entry %s", map.path.c_str());
+            int new_perms = map.perms & ~PROT_WRITE;  // Remove the write permission
+            if (mprotect(addr, size, new_perms) == -1) {
+                PLOGE("Failed to remove write permission from %s [%p, %p]", map.path.c_str(), addr,
+                      (void *) map.end);
+            } else {
+                LOGD("Successfully removed write permission from %s [%p, %p]", map.path.c_str(),
+                     addr, (void *) map.end);
+            }
         }
     }
 }
@@ -124,8 +151,8 @@ bool initialize() {
 
         auto field_of_solinker = reinterpret_cast<uintptr_t>(solinker) + i * sizeof(void *);
         auto next_of_solinker = *reinterpret_cast<void **>(field_of_solinker);
-        if (!next_field_found && (next_of_solinker == somain ||
-                                  (vdso != nullptr && next_of_solinker == vdso))) {
+        if (!next_field_found &&
+            (next_of_solinker == somain || (vdso != nullptr && next_of_solinker == vdso))) {
             SoInfo::field_next_offset = i * sizeof(void *);
             LOGD("field_next_offset should be here %zu * %zu = %p", i, sizeof(void *),
                  (void *) SoInfo::field_next_offset);
