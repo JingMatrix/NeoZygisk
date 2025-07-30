@@ -323,6 +323,7 @@ struct HookContext {
     size_t block_size = 0;
     bool should_spoof_maps = false;
     bool should_unmap = false;
+    bool skip_hooking_unloader = false;
     zygiskd::MountNamespace zygote_mns = zygiskd::MountNamespace::Root;
     jint MODIFIER_NATIVE = 0;
     jmethodID member_getModifiers = nullptr;
