@@ -2,7 +2,6 @@
 #include <sys/mman.h>
 
 #include <lsplt.hpp>
-#include <vector>
 
 #include "logging.hpp"
 #include "solist.hpp"
@@ -15,14 +14,11 @@ void clean_linker_trace(const char *path, size_t load, size_t unload) {
 }
 
 void spoof_virtual_maps(const char *path, bool clear_write_permission) {
-    // spoofing map names is futile in Android, we do it simply
+    // spoofing map path names is futile in Android, we do it simply
     // to avoid trivial Zygisk detections based on string comparison.
     for (auto &map : lsplt::MapInfo::Scan()) {
         void *addr = (void *) map.start;
         size_t size = map.end - map.start;
-        bool is_neozygisk =
-            (strstr(map.path.c_str(), "libzygisk.so") && (map.perms & PROT_EXEC) != 1);
-        if (is_neozygisk) LOGW("found neozygisk at %p with size %zu", addr, size);
 
         if (strstr(map.path.c_str(), path)) {
             LOGD("spoofing entry path contaning string %s", map.path.c_str());
@@ -45,7 +41,7 @@ void spoof_virtual_maps(const char *path, bool clear_write_permission) {
             // The backup copy is now at the original address, we can unmap our temporary one.
             // Note: The man page for mremap is ambiguous on whether the old mapping at 'copy'
             // is unmapped. To be safe and avoid potential leaks, we explicitly unmap it.
-            // munmap(copy, size);
+            munmap(copy, size);
             // Restore the original permissions
             mprotect(addr, size, map.perms);
         }
