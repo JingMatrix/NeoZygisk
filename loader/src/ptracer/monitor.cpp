@@ -76,7 +76,7 @@ public:
     }
 
     bool RegisterHandler(EventHandler &handler, uint32_t events) {
-        struct epoll_event ev {};
+        struct epoll_event ev{};
         ev.events = events;
         ev.data.ptr = &handler;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, handler.GetFd(), &ev) == -1) {
@@ -130,8 +130,9 @@ struct SocketHandler : public EventHandler {
             PLOGE("socket create");
             return false;
         }
-        struct sockaddr_un addr {
-            .sun_family = AF_UNIX, .sun_path = {0},
+        struct sockaddr_un addr{
+            .sun_family = AF_UNIX,
+            .sun_path = {0},
         };
         sprintf(addr.sun_path, "%s/%s", zygiskd::GetTmpPath().c_str(), SOCKET_NAME);
         socklen_t socklen = sizeof(sa_family_t) + strlen(addr.sun_path);
@@ -259,12 +260,10 @@ struct SocketHandler : public EventHandler {
 constexpr auto MAX_RETRY_COUNT = 5;
 
 #define CREATE_ZYGOTE_START_COUNTER(abi)                                                           \
-    struct timespec last_zygote##abi {                                                             \
-        .tv_sec = 0, .tv_nsec = 0                                                                  \
-    };                                                                                             \
+    struct timespec last_zygote##abi{.tv_sec = 0, .tv_nsec = 0};                                   \
     int count_zygote##abi = 0;                                                                     \
     bool should_stop_inject##abi() {                                                               \
-        struct timespec now {};                                                                    \
+        struct timespec now{};                                                                     \
         clock_gettime(CLOCK_MONOTONIC, &now);                                                      \
         if (now.tv_sec - last_zygote##abi.tv_sec < 30) {                                           \
             count_zygote##abi++;                                                                   \
@@ -541,7 +540,9 @@ static bool prepare_environment() {
     }
     bool post = false;
     file_readline(false, orig_prop.get(), [&](std::string_view line) -> bool {
-        if (line.starts_with("description=")) {
+        if (line.starts_with("updateJson=")) {
+            return true;
+        } else if (line.starts_with("description=")) {
             post = true;
             post_section += line.substr(sizeof("description"));
         } else {
@@ -580,8 +581,9 @@ void init_monitor() {
 void send_control_command(Command cmd) {
     int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (sockfd == -1) err(EXIT_FAILURE, "socket");
-    struct sockaddr_un addr {
-        .sun_family = AF_UNIX, .sun_path = {0},
+    struct sockaddr_un addr{
+        .sun_family = AF_UNIX,
+        .sun_path = {0},
     };
     sprintf(addr.sun_path, "%s/%s", zygiskd::GetTmpPath().c_str(), SOCKET_NAME);
     socklen_t socklen = sizeof(sa_family_t) + strlen(addr.sun_path);
