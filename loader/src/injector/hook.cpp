@@ -122,18 +122,37 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
     return res;
 }
 
+DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *default_value) {
+    if (!g_hook->skip_hooking_unloader) {
+        g_hook->hook_unloader();
+        g_hook->skip_hooking_unloader = true;
+        for (auto it = g_hook->plt_backup.rbegin(); it != g_hook->plt_backup.rend(); ++it) {
+            const auto &[dev, inode, sym, old_func] = *it;
+            if (*old_func == old_property_get) {
+                if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr) ||
+                    !lsplt::CommitHook(g_hook->cached_map_infos, true)) {
+                    LOGD("failed to unhook property_get");
+                } else {
+                    // A reverse_iterator must be converted to a forward iterator.
+                    // The `base()` of the *next* iterator gives the correct position.
+                    g_hook->plt_backup.erase(std::next(it).base());
+                }
+                break;
+            }
+        }
+    }
+    return old_property_get(key, value, default_value);
+}
+
 // We cannot directly call `munmap` to unload ourselves, otherwise when `munmap` returns,
 // it will return to our code which has been unmapped, causing segmentation fault.
 // Instead, we hook `pthread_attr_setstacksize` which will be called when VM daemon threads start.
 DCL_HOOK_FUNC(static int, pthread_attr_setstacksize, void *target, size_t size) {
     int res = old_pthread_attr_setstacksize((pthread_attr_t *) target, size);
 
-    LOGV("pthread_attr_setstacksize called in [tid, pid]: %d, %d", gettid(), getpid());
+    if (g_hook->should_unmap && gettid() == getpid()) {
+        // Only perform unloading on the main thread
 
-    // Only perform unloading on the main thread
-    if (gettid() != getpid()) return res;
-
-    if (g_hook->should_unmap) {
         g_hook->restore_plt_hook();
         if (g_hook->should_unmap) {
             void *start_addr = g_hook->start_addr;
@@ -150,9 +169,9 @@ DCL_HOOK_FUNC(static int, pthread_attr_setstacksize, void *target, size_t size) 
             LOGD("unmap libzygisk.so loaded at %p with size %zu", start_addr, block_size);
             [[clang::musttail]] return munmap(start_addr, block_size);
         }
+        delete g_hook;
     }
 
-    delete g_hook;
     return res;
 }
 
@@ -193,7 +212,6 @@ ZygiskContext::~ZygiskContext() {
     // Cleanup
     g_hook->should_unmap = true;
     g_hook->restore_zygote_hook(env);
-    g_hook->hook_unloader();
 }
 
 // -----------------------------------------------------------------
@@ -249,6 +267,7 @@ void HookContext::hook_plt() {
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, fork);
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, unshare);
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, strdup);
+    PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, property_get);
 
     if (!lsplt::CommitHook(cached_map_infos)) LOGE("plt_hook failed\n");
 
@@ -262,6 +281,7 @@ void HookContext::hook_unloader() {
     ino_t art_inode = 0;
     dev_t art_dev = 0;
 
+    cached_map_infos = lsplt::MapInfo::Scan();
     for (auto &map : cached_map_infos) {
         if (map.path.ends_with("/libart.so")) {
             art_inode = map.inode;
@@ -271,7 +291,9 @@ void HookContext::hook_unloader() {
     }
 
     PLT_HOOK_REGISTER(art_dev, art_inode, pthread_attr_setstacksize);
-    if (!lsplt::CommitHook(cached_map_infos)) LOGE("plt_hook failed\n");
+    if (!lsplt::CommitHook(cached_map_infos)) {
+        LOGE("plt_hook failed\n");
+    }
 }
 
 void HookContext::restore_plt_hook() {
@@ -282,7 +304,7 @@ void HookContext::restore_plt_hook() {
             should_unmap = false;
         }
     }
-    if (!lsplt::CommitHook(cached_map_infos)) {
+    if (!lsplt::CommitHook(cached_map_infos, true)) {
         LOGE("Failed to restore plt_hook\n");
         should_unmap = false;
     }
