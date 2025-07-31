@@ -1,39 +1,36 @@
 # NeoZygisk
 
-NeoZygisk is a Zygote injection module implemented using `ptrace`, which provides Zygisk API support for APatch/KernelSU and serves as a replacement of Magisk's built-in Zygisk.
+NeoZygisk is a Zygote injection module, implemented via [`ptrace`](https://man7.org/linux/man-pages/man2/ptrace.2.html), that provides Zygisk API support for APatch and KernelSU.
+It also functions as a powerful replacement for Magisk's built-in Zygisk.
 
-## Requirements
+## Core Principles
 
-### General
+NeoZygisk is engineered with four key objectives:
 
-+ No multiple root implementation installed
+1.  **API Compatibility:** Maintains full API compatibility with [Magisk's built-in Zygisk](https://github.com/topjohnwu/Magisk/tree/master/native/src/core/zygisk). The relevant API designs are mirrored in the source folder [injector](https://github.com/JingMatrix/NeoZygisk/tree/master/loader/src/injector) for reference.
+2.  **Minimalist Design:** Focuses on a lean and efficient implementation of the Zygisk API, avoiding feature bloat to ensure stability and performance.
+3.  **Trace Cleaning:** Guarantees the complete removal of its injection traces from application processes once all Zygisk modules are unloaded.
+4.  **Advanced Stealth:** Employs a sophisticated DenyList to provide granular control over root and module visibility, effectively hiding the traces of your root solution.
 
-### APatch
+## The DenyList Explained
 
-+ Minimal APatch version: 10762
+Modern systemless root solutions operate by creating overlay filesystems using [`mount`](https://man7.org/linux/man-pages/man8/mount.8.html) rather than directly modifying system partitions. The DenyList is a core feature designed to hide these modifications by precisely controlling the [mount namespaces](https://man7.org/linux/man-pages/man7/mount_namespaces.7.html) for each application process.
 
-### KernelSU
+Here is how NeoZygisk manages visibility for different application states:
 
-+ Minimal KernelSU version: 10940
-+ Minimal KernelSU Manager (ksud) version: 11424
-+ Kernel has full SELinux patch support
+| Application State | Mount Namespace Visibility | Description & Use Case |
+| :--- | :--- | :--- |
+| **Granted Root Privileges** | Root Solution Mounts + Module Mounts | For trusted applications that require full root access to function correctly (e.g., advanced file managers). |
+| **Standard App** <br/>*(Not on DenyList)* | **(APatch/KSU Only)** <br/> Module Mounts Only | Ideal for applying modules (like custom fonts or themes) to target apps without exposing the root environment. <br/> **Note:** This is not implemented for Magisk, as it requires root mounts to be visible for handling permission requests. |
+| **On DenyList** | Clean, Unmodified Mount Namespace | Provides a pristine environment for applications that perform root detection. The app's root privileges are revoked, and all traces of root and module mounts are hidden. |
 
-### Magisk
+## Configuration
 
-+ Minimal version: 26402
-+ Built-in Zygisk turned off
+To configure the DenyList for a specific application, use the appropriate setting within your root management app:
 
-## Design goals
+*   **For APatch/KernelSU:** Enable the **`Umount modules`** option for your target application.
+*   **For Magisk:** Use the **`Configure DenyList`** menu.
 
-1. NeoZygisk always synchronises with the [Magisk built-in Zygisk](https://github.com/topjohnwu/Magisk/tree/master/native/src/core/zygisk) API design, which are copied into the source folder [injector](https://github.com/JingMatrix/NeoZygisk/tree/master/loader/src/injector).
-2. NeoZygisk aims to provide a minimalist implementation of Zygisk API; unnecessary features are thus not considered.
-3. NeoZygisk guarantees to clean its injection trace inside applications processes once all Zygisk modules are unloaded.
-4. NeoZygisk helps to hide the traces of root solutions through its design of DenyList, as explained below.
-
-### DenyList
-
-Current root solutions of Android are implemented in a systmeless way, meaning that they overlay the filesystems of the device by [mounting](https://man7.org/linux/man-pages/man8/mount.8.html) instead of overwriting the actual file contents. `DenyList` is designed to help the mounting trace hiding, which provides the following controls over how [mount namespaces](https://man7.org/linux/man-pages/man7/mount_namespaces.7.html) are defined for app processes.
-
-1. For applications granted with root privilege, both root solutions mount points and modules mount points are present in their mount namespaces.
-2. [APatch/KSU only] For applications without root privilege and not on the DenyList, only modules mount points are present in their mount namespaces. As an example, this is the ideal configuration for applying font customization modules to their target applications. Note: this is *not implemented for Magisk*, which needs root mounting points to receive root permission requests.
-3. For applications on the DenyList, their root privilege will be dropped even granted intentionally. A clean mount namespace will be provided for them to hide the traces of root solutions.
+> **Important Note for Magisk Users**
+>
+> The **`Enforce DenyList`** option in Magisk enables Magisk's *own* DenyList implementation. This is separate from NeoZygisk's functionality, is not guaranteed to hide all mount-related traces, and may conflict with NeoZygisk's hiding mechanisms. It is strongly recommended to leave this option disabled and rely solely on NeoZygisk's configuration.

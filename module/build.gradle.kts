@@ -31,6 +31,7 @@ val maxKsuVersion: Int by rootProject.extra
 val minMagiskVersion: Int by rootProject.extra
 val workDirectory: String by rootProject.extra
 val commitHash: String by rootProject.extra
+val updateJson: String by rootProject.extra
 
 android.buildFeatures {
     androidResources = false
@@ -63,7 +64,8 @@ androidComponents.onVariants { variant ->
                 "moduleId" to moduleId,
                 "moduleName" to moduleName,
                 "versionName" to "$verName ($verCode-$commitHash-$variantLowered)",
-                "versionCode" to verCode
+                "versionCode" to verCode,
+                "updateJson" to updateJson
             )
         }
         from("$projectDir/src") {

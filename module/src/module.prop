@@ -4,3 +4,4 @@ version=${versionName}
 versionCode=${versionCode}
 author=JingMatrix, Nullptr, 5ec1cff
 description=Zygote injection with ptrace.
+updateJson=${updateJson}
