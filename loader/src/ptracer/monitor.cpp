@@ -246,7 +246,14 @@ struct SocketHandler : public EventHandler {
                 updateStatus();
                 break;
             case SYSTEM_SERVER_STARTED:
-                LOGD("system server started, module.prop updated");
+                LOGD("system server started, copying prop to neozygisk directory");
+                {
+                    // Create neozygisk directory if it doesn't exist
+                    system("mkdir -p /data/adb/neozygisk");
+                    // Copy the updated module.prop to the neozygisk directory
+                    std::string copy_cmd = "cp " + prop_path + " /data/adb/neozygisk/module.prop";
+                    system(copy_cmd.c_str());
+                }
                 break;
             }
         }
@@ -528,6 +535,11 @@ static void updateStatus() {
     WRITE_STATUS_ABI(32)
     fprintf(prop.get(), "%s\n%s\n\n%s", pre_section.c_str(), status_text.c_str(),
             post_section.c_str());
+
+    // Also copy to neozygisk directory for webui access
+    system("mkdir -p /data/adb/neozygisk");
+    std::string copy_cmd = "cp " + prop_path + " /data/adb/neozygisk/module.prop";
+    system(copy_cmd.c_str());
 }
 
 static bool prepare_environment() {
