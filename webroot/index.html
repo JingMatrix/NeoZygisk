@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN" class="mdui-theme-auto">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, shrink-to-fit=no" />
+  <meta name="renderer" content="webkit" />
+  <title data-i18n="title">NeoZygisk WebUI</title>
+
+  <!-- MDUI CSS & JS -->
+  <link rel="stylesheet" href="ass/mdui.css">
+  <script src="ass/mdui.global.js"></script>
+
+  <!-- Material Icons -->
+  <link href="ass/Meta.css" rel="stylesheet">
+  <link href="ass/Meta_Outlined.css" rel="stylesheet">
+  <link href="ass/Meta_Round.css" rel="stylesheet">
+  <link href="ass/Meta_Sharp.css" rel="stylesheet">
+  <link href="ass/Meta_TwoTone.css" rel="stylesheet">
+
+  <style>
+    /* 增加一些间距和动画效果 */
+    mdui-list {
+      padding: 8px;
+    }
+    mdui-collapse-item .mdui-list-item {
+      transition: background-color 0.3s;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- 顶部应用栏 -->
+  <mdui-top-app-bar style="position: relative;">
+    <mdui-top-app-bar-title data-i18n="main_title">NeoZygisk WebUI</mdui-top-app-bar-title>
+    <div style="flex-grow: 1;"></div>
+    <mdui-dropdown>
+        <mdui-button-icon slot="trigger" icon="translate"></mdui-button-icon>
+        <mdui-menu class="language-menu" selects="single">
+            <mdui-menu-item value="en">English</mdui-menu-item>
+            <mdui-menu-item value="zh">中文</mdui-menu-item>
+        </mdui-menu>
+    </mdui-dropdown>
+    <mdui-dropdown>
+      <mdui-button-icon slot="trigger" icon="more_vert"></mdui-button-icon>
+      <mdui-menu selects="single" value="auto" class="theme-menu">
+        <mdui-menu-item value="light" data-i18n="light_mode">亮色模式</mdui-menu-item>
+        <mdui-menu-item value="dark" data-i18n="dark_mode">暗色模式</mdui-menu-item>
+        <mdui-divider></mdui-divider>
+        <mdui-menu-item value="auto" data-i18n="follow_system">跟随系统</mdui-menu-item>
+      </mdui-menu>
+    </mdui-dropdown>
+  </mdui-top-app-bar>
+
+  <!-- 信息展示列表 -->
+  <mdui-list>
+    <!-- 核心状态 -->
+    <mdui-list-item id="main_status" headline="-" icon="hourglass_top" description="-"></mdui-list-item>
+    <mdui-divider></mdui-divider>
+
+    <!-- 系统信息 -->
+    <mdui-collapse>
+      <mdui-collapse-item>
+        <mdui-list-item slot="header" icon="developer_board" data-i18n="system_info">系统信息</mdui-list-item>
+        <div style="margin-left: 2.5rem; padding-top: 8px; padding-bottom: 8px;">
+          <div><span data-i18n="android_version_label">Android 版本:</span> <span id="android_version"></span></div>
+          <div style="margin-top: 8px;"><span data-i18n="kernel_version_label">内核版本:</span> <span id="kernel_version"></span></div>
+        </div>
+      </mdui-collapse-item>
+    </mdui-collapse>
+
+    <!-- 模块信息 -->
+    <mdui-collapse>
+      <mdui-collapse-item>
+        <mdui-list-item slot="header" icon="extension" data-i18n="module_info">模块信息</mdui-list-item>
+        <div style="margin-left: 2.5rem; padding-top: 8px; padding-bottom: 8px;">
+          <div><span data-i18n="module_version_label">模块版本:</span> <span id="module_version"></span></div>
+          <div style="margin-top: 8px;"><span data-i18n="root_impl_label">Root 实现:</span> <span id="root_impl"></span></div>
+          <div style="margin-top: 8px;"><span data-i18n="zygote_status_label">Zygote 状态:</span> <span id="zygote_status"></span></div>
+        </div>
+      </mdui-collapse-item>
+    </mdui-collapse>
+
+    <!-- 已加载模块 -->
+    <mdui-collapse>
+      <mdui-collapse-item>
+        <mdui-list-item slot="header" icon="list_alt" data-i18n="loaded_modules">已加载模块</mdui-list-item>
+        <div id="module_list" style="margin-left: 2.5rem; padding-top: 8px; padding-bottom: 8px;">
+        </div>
+      </mdui-collapse-item>
+    </mdui-collapse>
+  </mdui-list>
+
+  <script>
+    const translations = {
+      en: {
+        title: "NeoZygisk WebUI",
+        main_title: "NeoZygisk WebUI",
+        light_mode: "Light Mode",
+        dark_mode: "Dark Mode",
+        follow_system: "Follow System",
+        getting_status: "Getting status...",
+        please_wait: "Please wait...",
+        system_info: "System Info",
+        android_version_label: "Android Version:",
+        getting: "Getting...",
+        kernel_version_label: "Kernel Version:",
+        module_info: "Module Info",
+        module_version_label: "Module Version:",
+        root_impl_label: "Root Implementation:",
+        zygote_status_label: "Zygote Status:",
+        loaded_modules: "Loaded Modules",
+        no_modules: "No modules",
+        reboot_required: "Reboot Required",
+        reboot_required_desc: "Module updated, please reboot to apply changes.",
+        waiting_for_reboot: "Waiting for reboot",
+        unknown: "Unknown",
+        no_modules_loaded: "No modules loaded",
+        injected: "Injected",
+        not_injected: "Not injected",
+        zygote_not_found: "Zygote process info not found",
+        activated: "NeoZygisk Activated",
+        activated_desc: (actual, expected) => `Successfully injected ${actual}/${expected} Zygote processes`,
+        not_activated: "NeoZygisk Not Activated",
+        not_activated_desc: (expected) => `Failed to inject into ${expected} Zygote processes`,
+        zygote_process_not_found: "Zygote process not found",
+        get_info_failed: "Failed to get information",
+        get_info_failed_desc: "Please make sure you are running in a KernelSU environment.",
+        failed: "Failed",
+      },
+      zh: {
+        title: "NeoZygisk WebUI",
+        main_title: "NeoZygisk WebUI",
+        light_mode: "亮色模式",
+        dark_mode: "暗色模式",
+        follow_system: "跟随系统",
+        getting_status: "正在获取状态...",
+        please_wait: "请稍候...",
+        system_info: "系统信息",
+        android_version_label: "Android 版本:",
+        getting: "获取中...",
+        kernel_version_label: "内核版本:",
+        module_info: "模块信息",
+        module_version_label: "模块版本:",
+        root_impl_label: "Root 实现:",
+        zygote_status_label: "Zygote 状态:",
+        loaded_modules: "已加载模块",
+        no_modules: "暂无模块",
+        reboot_required: "需要重启",
+        reboot_required_desc: "模块已更新，请重启设备以应用更改。",
+        waiting_for_reboot: "等待重启",
+        unknown: "未知",
+        no_modules_loaded: "无模块加载",
+        injected: "注入成功",
+        not_injected: "未注入",
+        zygote_not_found: "未找到 Zygote 进程信息",
+        activated: "NeoZygisk 已激活",
+        activated_desc: (actual, expected) => `成功注入 ${actual}/${expected} 个 Zygote 进程`,
+        not_activated: "NeoZygisk 未激活",
+        not_activated_desc: (expected) => `未能注入到 ${expected} 个 Zygote 进程`,
+        zygote_process_not_found: "未找到 Zygote 进程",
+        get_info_failed: "获取信息失败",
+        get_info_failed_desc: "请确保在 KernelSU 环境下运行。",
+        failed: "失败",
+      }
+    };
+    let t;
+
+    const mainStatus = document.getElementById('main_status');
+    const androidVersion = document.getElementById('android_version');
+    const kernelVersion = document.getElementById('kernel_version');
+    const moduleVersion = document.getElementById('module_version');
+    const rootImpl = document.getElementById('root_impl');
+    const zygoteStatus = document.getElementById('zygote_status');
+    const moduleList = document.getElementById('module_list');
+
+    const updateUI = async () => {
+      mainStatus.headline = t.getting_status;
+      mainStatus.description = t.please_wait;
+      [androidVersion, kernelVersion, moduleVersion, rootImpl, zygoteStatus].forEach(el => el.textContent = t.getting);
+      moduleList.innerHTML = `<mdui-list-item>${t.no_modules}</mdui-list-item>`;
+
+      try {
+        const updatePending = ksu.exec('[ -f /data/adb/modules/zygisksu/update ] && echo "true"').trim() === 'true';
+        if (updatePending) {
+          mainStatus.headline = t.reboot_required;
+          mainStatus.description = t.reboot_required_desc;
+          mainStatus.icon = 'system_update';
+          mainStatus.style.color = 'rgb(var(--mdui-color-warning))';
+          [androidVersion, kernelVersion, moduleVersion, rootImpl, zygoteStatus].forEach(el => el.textContent = t.waiting_for_reboot);
+          moduleList.innerHTML = `<mdui-list-item>${t.waiting_for_reboot}</mdui-list-item>`;
+          return;
+        }
+
+        androidVersion.textContent = ksu.exec('/system/bin/getprop ro.build.version.release').trim();
+        kernelVersion.textContent = ksu.exec('/system/bin/uname -r').trim();
+
+        const getPropValue = (key) => {
+          const command = `/system/bin/grep '^${key}=' /data/adb/neozygisk/module.prop | /system/bin/cut -d'=' -f2-`;
+          return (ksu.exec(command) || '').trim();
+        };
+
+        const version = getPropValue('version') || t.unknown;
+        const description = getPropValue('description') || '';
+        moduleVersion.textContent = version;
+
+        const rootMatch = description.match(/Root: ([^,)]+)/);
+        const modulesMatch = description.match(/Modules: ([^)]+)/);
+        const zygote64Match = description.match(/zygote64: ([^,]+)/);
+        const zygote32Match = description.match(/zygote32: ([^,]+)/);
+
+        rootImpl.textContent = rootMatch ? rootMatch[1] : t.unknown;
+
+        if (modulesMatch && modulesMatch[1]) {
+          const modules = modulesMatch[1].split(',').map(m => m.trim());
+          moduleList.innerHTML = '';
+          if (modules.length > 0 && modules[0]) {
+            modules.forEach(mod => {
+              const item = document.createElement('mdui-list-item');
+              item.textContent = mod;
+              item.icon = 'check_circle_outline';
+              moduleList.appendChild(item);
+            });
+          } else {
+            moduleList.innerHTML = `<mdui-list-item>${t.no_modules_loaded}</mdui-list-item>`;
+          }
+        } else {
+          moduleList.innerHTML = `<mdui-list-item>${t.no_modules_loaded}</mdui-list-item>`;
+        }
+
+        let expectedInjections = 0;
+        let actualInjections = 0;
+        let zygoteStatusText = [];
+
+        if (zygote64Match) {
+          expectedInjections++;
+          const isInjected = zygote64Match[1].includes('injected');
+          if (isInjected) actualInjections++;
+          zygoteStatusText.push(`zygote64: ${isInjected ? t.injected : t.not_injected}`);
+        }
+
+        if (zygote32Match) {
+          expectedInjections++;
+          const isInjected = zygote32Match[1].includes('injected');
+          if (isInjected) actualInjections++;
+          zygoteStatusText.push(`zygote32: ${isInjected ? t.injected : t.not_injected}`);
+        }
+
+        zygoteStatus.textContent = expectedInjections === 0 ? t.zygote_not_found : zygoteStatusText.join(', ');
+
+        if (actualInjections > 0) {
+          mainStatus.headline = t.activated;
+          mainStatus.description = t.activated_desc(actualInjections, expectedInjections);
+          mainStatus.icon = 'check_circle';
+          mainStatus.style.color = actualInjections === expectedInjections ? 'rgb(var(--mdui-color-success))' : 'rgb(var(--mdui-color-warning))';
+        } else {
+          mainStatus.headline = t.not_activated;
+          mainStatus.description = expectedInjections > 0 ? t.not_activated_desc(expectedInjections) : t.zygote_process_not_found;
+          mainStatus.icon = 'error';
+          mainStatus.style.color = 'rgb(var(--mdui-color-error))';
+        }
+
+      } catch (e) {
+        mainStatus.headline = t.get_info_failed;
+        mainStatus.description = t.get_info_failed_desc;
+        mainStatus.icon = 'gpp_bad';
+        mainStatus.style.color = 'rgb(var(--mdui-color-error))';
+        console.error(e);
+        [androidVersion, kernelVersion, moduleVersion, rootImpl, zygoteStatus].forEach(el => el.textContent = t.failed);
+        moduleList.innerHTML = `<mdui-list-item>${e.message}</mdui-list-item>`;
+      }
+    };
+
+    const setLanguage = (lang) => {
+      localStorage.setItem('preferred_language', lang);
+      t = translations[lang];
+      
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (t[key]) el.textContent = t[key];
+      });
+      document.title = t.title;
+      
+      const langMenu = document.querySelector('.language-menu');
+      if (langMenu) langMenu.value = lang;
+
+      updateUI();
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const themeMenu = document.querySelector('.theme-menu');
+      const html = document.documentElement;
+      themeMenu.addEventListener('change', (event) => {
+        const theme = event.target.value;
+        html.classList.remove('mdui-theme-light', 'mdui-theme-dark', 'mdui-theme-auto');
+        html.classList.add(`mdui-theme-${theme}`);
+      });
+
+      const langMenu = document.querySelector('.language-menu');
+      langMenu.addEventListener('change', (event) => {
+        setLanguage(event.target.value);
+      });
+
+      const savedLang = localStorage.getItem('preferred_language');
+      const initialLang = savedLang || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+      setLanguage(initialLang);
+    });
+  </script>
+</body>
+
+</html>
