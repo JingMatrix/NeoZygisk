@@ -198,6 +198,11 @@ enum Option : int {
     // Be aware that after dlclose-ing your module, all of your code will be unmapped from memory.
     // YOU MUST NOT ENABLE THIS OPTION AFTER HOOKING ANY FUNCTIONS IN THE PROCESS.
     DLCLOSE_MODULE_LIBRARY = 1,
+
+    // When this option is set, the injector library will no longer unmap itself from memory.
+    // This is useful when the module wants to clean the injector trace using its own procedures.
+    // It is unreasonable to enable this option together with DLCLOSE_MODULE_LIBRARY.
+    DELEGATE_TRACE_CLEAN = 2,
 };
 
 // Bit masks of the return value of Api::getFlags()

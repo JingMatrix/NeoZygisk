@@ -321,8 +321,8 @@ struct HookContext {
     // std::array<JNINativeMethod> zygote_methods
     void *start_addr = nullptr;
     size_t block_size = 0;
-    bool should_spoof_maps = false;
-    bool should_unmap = false;
+    bool unmap = true;
+    bool unhook = false;
     bool skip_hooking_unloader = false;
     zygiskd::MountNamespace zygote_mns = zygiskd::MountNamespace::Root;
     jint MODIFIER_NATIVE = 0;

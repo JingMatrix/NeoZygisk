@@ -97,6 +97,9 @@ void ZygiskModule::setOption(zygisk::Option opt) {
     case zygisk::DLCLOSE_MODULE_LIBRARY:
         unload = true;
         break;
+    case zygisk::DELEGATE_TRACE_CLEAN:
+        g_hook->unmap = false;
+        break;
     }
 }
 
@@ -362,8 +365,6 @@ void ZygiskContext::run_modules_post() {
     if (modules.size() > 0) {
         LOGD("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         clean_linker_trace("jit-cache-zygisk", modules.size(), modules_unloaded);
-        g_hook->should_spoof_maps =
-            (flags & APP_SPECIALIZE) && (modules.size() - modules_unloaded) > 0;
     }
 }
 

@@ -150,22 +150,22 @@ DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *defau
 DCL_HOOK_FUNC(static int, pthread_attr_setstacksize, void *target, size_t size) {
     int res = old_pthread_attr_setstacksize((pthread_attr_t *) target, size);
 
-    if (g_hook->should_unmap && gettid() == getpid()) {
+    if (g_hook->unhook && gettid() == getpid()) {
         // Only perform unloading on the main thread
 
         g_hook->restore_plt_hook();
-        if (g_hook->should_unmap) {
+        if (g_hook->unmap) {
+            // In case that the unmap option is set by module developpers,
+            // please refer to the function `spoof_virtual_maps` for a simple routine of trace hiding.
+            // After the trace hiding, it's then suggested to unmap libzygisk.so from memory.
+
             void *start_addr = g_hook->start_addr;
             size_t block_size = g_hook->block_size;
 
-            if (g_hook->should_spoof_maps) {
-                spoof_virtual_maps("jit-cache-zygisk", true);
-            }
-
             delete g_hook;
             // Because both `pthread_attr_setstacksize` and `munmap` have the same function
-            // signature, we can use `musttail` to let the compiler reuse our stack frame and thus
-            // `munmap` will directly return to the caller of `pthread_attr_setstacksize`.
+            // signature, we can use `musttail` to let the compiler reuse our stack frame and
+            // thus `munmap` will directly return to the caller of `pthread_attr_setstacksize`.
             LOGD("unmap libzygisk.so loaded at %p with size %zu", start_addr, block_size);
             [[clang::musttail]] return munmap(start_addr, block_size);
         }
@@ -210,7 +210,7 @@ ZygiskContext::~ZygiskContext() {
     }
 
     // Cleanup
-    g_hook->should_unmap = true;
+    g_hook->unhook = true;
     g_hook->restore_zygote_hook(env);
 }
 
@@ -301,12 +301,12 @@ void HookContext::restore_plt_hook() {
     for (const auto &[dev, inode, sym, old_func] : plt_backup) {
         if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr)) {
             LOGE("Failed to register plt_hook [%s]\n", sym);
-            should_unmap = false;
+            unmap = false;
         }
     }
     if (!lsplt::CommitHook(cached_map_infos, true)) {
         LOGE("Failed to restore plt_hook\n");
-        should_unmap = false;
+        unmap = false;
     }
 }
 
