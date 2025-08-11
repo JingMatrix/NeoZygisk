@@ -112,7 +112,7 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
         } else if (!(g_ctx->flags & DO_REVERT_UNMOUNT)) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Module);
-        } else if (g_hook->zygote_mns != zygiskd::MountNamespace::Clean) {
+        } else {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
         }
         old_unshare(CLONE_NEWNS);
