@@ -14,6 +14,7 @@ target_link_libraries(common log)
 
 aux_source_directory(injector INJECTOR_SRC_LIST)
 add_library(zygisk SHARED ${INJECTOR_SRC_LIST})
+target_compile_options(zygisk PRIVATE -Wno-invalid-offsetof -Wno-unused-private-field)
 target_include_directories(zygisk PRIVATE include)
 target_link_libraries(zygisk log common lsplt_static phmap)
 

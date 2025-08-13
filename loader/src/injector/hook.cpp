@@ -411,7 +411,7 @@ void HookContext::restore_zygote_hook(JNIEnv *env) {
 void hook_entry(void *start_addr, size_t block_size) {
     g_hook = new HookContext(start_addr, block_size);
     g_hook->hook_plt();
-    clean_linker_trace(zygiskd::GetTmpPath().data(), 1, 0);
+    clean_linker_trace(zygiskd::GetTmpPath().data(), 1, 0, true);
 }
 
 void hookJniNativeMethods(JNIEnv *env, const char *clz, JNINativeMethod *methods, int numMethods) {
