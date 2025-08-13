@@ -7,7 +7,8 @@ void hook_entry(void *start_addr, size_t block_size);
 
 void hookJniNativeMethods(JNIEnv *env, const char *clz, JNINativeMethod *methods, int numMethods);
 
-void clean_linker_trace(const char *path, size_t load, size_t unload);
+void clean_linker_trace(const char *path, size_t loaded_modules, size_t unloaded_modules,
+                        bool unload_soinfo);
 
 void spoof_virtual_maps(const char *path, bool clear_write_permission);
 

@@ -7,10 +7,15 @@
 #include "solist.hpp"
 #include "zygisk.hpp"
 
-void clean_linker_trace(const char *path, size_t load, size_t unload) {
+void clean_linker_trace(const char *path, size_t loaded_modules, size_t unloaded_modules,
+                        bool unload_soinfo) {
     LOGD("cleaning linker trace for path %s", path);
-    if (load > 0 || unload > 0) SoList::resetCounters(load, unload);
-    SoList::dropSoPath(path);
+    if (unload_soinfo) {
+        SoList::resetCounters(loaded_modules, loaded_modules);
+    } else {
+        SoList::resetCounters(loaded_modules, unloaded_modules);
+    }
+    SoList::dropSoPath(path, unload_soinfo);
 }
 
 void spoof_virtual_maps(const char *path, bool clear_write_permission) {
@@ -78,6 +83,11 @@ bool initialize() {
     if (soinfo_free_name.empty()) return false;
     LOGD("found symbol name %s", soinfo_free_name.data());
 
+    std::string_view soinfo_unload_name =
+        linker.findSymbolNameByPrefix("__dl__ZL13soinfo_unloadP6soinfo");
+    if (soinfo_unload_name.empty()) return false;
+    LOGD("found symbol name %s", soinfo_unload_name.data());
+
     char llvm_sufix[llvm_suffix_length + 1];
 
     if (somain_sym_name.length() != strlen("__dl__ZL6somain")) {
@@ -99,26 +109,31 @@ bool initialize() {
     char vdso_sym_name[sizeof("__dl__ZL4vdso") + sizeof(llvm_sufix)];
     snprintf(vdso_sym_name, sizeof(vdso_sym_name), "__dl__ZL4vdso%s", llvm_sufix);
 
-    solinker = getStaticPointer<SoInfo>(linker, solinker_sym_name);
+    solinker = getStaticPointer<SoInfoWrapper>(linker, solinker_sym_name);
     if (solinker == nullptr) {
-        solinker = getStaticPointer<SoInfo>(linker, solist_sym_name);
+        solinker = getStaticPointer<SoInfoWrapper>(linker, solist_sym_name);
         if (solinker == nullptr) return false;
         LOGD("found symbol solist at %p", solinker);
     } else {
         LOGD("found symbol solinker at %p", solinker);
     }
 
-    auto *vdso = getStaticPointer<SoInfo>(linker, vdso_sym_name);
+    auto *vdso = getStaticPointer<SoInfoWrapper>(linker, vdso_sym_name);
     if (vdso != nullptr) LOGD("found symbol vdso at %p", vdso);
 
-    SoInfo::get_realpath_sym = reinterpret_cast<decltype(SoInfo::get_realpath_sym)>(
+    SoInfoWrapper::get_realpath_sym = reinterpret_cast<decltype(SoInfoWrapper::get_realpath_sym)>(
         linker.getSymbAddress("__dl__ZNK6soinfo12get_realpathEv"));
-    if (SoInfo::get_realpath_sym != nullptr) LOGD("found symbol get_realpath_sym");
+    if (SoInfoWrapper::get_realpath_sym != nullptr) LOGD("found symbol get_realpath_sym");
 
-    SoInfo::soinfo_free =
-        reinterpret_cast<decltype(SoInfo::soinfo_free)>(linker.getSymbAddress(soinfo_free_name));
-    if (SoInfo::soinfo_free == nullptr) return false;
+    SoInfoWrapper::soinfo_free = reinterpret_cast<decltype(SoInfoWrapper::soinfo_free)>(
+        linker.getSymbAddress(soinfo_free_name));
+    if (SoInfoWrapper::soinfo_free == nullptr) return false;
     LOGD("found symbol soinfo_free");
+
+    SoInfoWrapper::soinfo_unload = reinterpret_cast<decltype(SoInfoWrapper::soinfo_unload)>(
+        linker.getSymbAddress(soinfo_unload_name));
+    if (SoInfoWrapper::soinfo_unload == nullptr) return false;
+    LOGD("found symbol soinfo_unload");
 
     g_module_load_counter = reinterpret_cast<decltype(g_module_load_counter)>(
         linker.getSymbAddress("__dl__ZL21g_module_load_counter"));
@@ -128,54 +143,94 @@ bool initialize() {
         linker.getSymbAddress("__dl__ZL23g_module_unload_counter"));
     if (g_module_unload_counter != nullptr) LOGD("found symbol g_module_unload_counter");
 
-    somain = getStaticPointer<SoInfo>(linker, somain_sym_name.data());
+    somain = getStaticPointer<SoInfoWrapper>(linker, somain_sym_name.data());
     if (somain == nullptr) return false;
     LOGD("found symbol somain at %p", somain);
 
+    return findHeuristicOffsets(linker.name(), vdso);
+}
+
+bool findHeuristicOffsets(std::string linker_name, SoInfoWrapper *vdso) {
+    LOGD("Offsets in header [size, next, constructor_called, realpath]: [%p, %p, %p, %p]",
+         (void *) SoInfoWrapper::field_size_offset, (void *) SoInfoWrapper::field_next_offset,
+         (void *) SoInfoWrapper::field_constructor_called_offset,
+         (void *) SoInfoWrapper::field_realpath_offset);
+
     bool size_field_found = false;
     bool next_field_found = false;
-    const size_t linker_realpath_size = linker.name().size();
+    bool constructor_called_field_found = false;
+
+    const size_t linker_realpath_size = linker_name.size();
+
     for (size_t i = 0; i < size_block_range / sizeof(void *); i++) {
         auto size_of_somain =
             *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(somain) + i * sizeof(void *));
-        if (!size_field_found && size_of_somain < size_maximal && size_of_somain > size_minimal) {
-            SoInfo::field_size_offset = i * sizeof(void *);
-            LOGD("field_size_offset is %zu * %zu = %p", i, sizeof(void *),
-                 (void *) SoInfo::field_size_offset);
-            size_field_found = true;
+
+        if (!size_field_found) {
+            if (size_of_somain < size_maximal && size_of_somain > size_minimal) {
+                SoInfoWrapper::field_size_offset = i * sizeof(void *);
+                LOGD("heuristic field_size_offset is %zu * %zu = %p", i, sizeof(void *),
+                     reinterpret_cast<void *>(SoInfoWrapper::field_size_offset));
+                size_field_found = true;
+                continue;
+            }
         }
+        if (!size_field_found) continue;
 
         auto field_of_solinker = reinterpret_cast<uintptr_t>(solinker) + i * sizeof(void *);
-        auto next_of_solinker = *reinterpret_cast<void **>(field_of_solinker);
-        if (!next_field_found &&
-            (next_of_solinker == somain || (vdso != nullptr && next_of_solinker == vdso))) {
-            SoInfo::field_next_offset = i * sizeof(void *);
-            LOGD("field_next_offset should be here %zu * %zu = %p", i, sizeof(void *),
-                 (void *) SoInfo::field_next_offset);
-            next_field_found = true;
-            if (SoInfo::get_realpath_sym != nullptr) break;
-        }
 
-        if (size_field_found && next_field_found) {
-            std::string *realpath_of_solinker = reinterpret_cast<std::string *>(field_of_solinker);
-            if (realpath_of_solinker->size() == linker_realpath_size) {
-                char buffer[100];
-                strncpy(buffer, realpath_of_solinker->c_str(), linker_realpath_size);
-                buffer[linker_realpath_size] = '\0';
-                if (strcmp(linker.name().c_str(), buffer) == 0) {
-                    SoInfo::field_realpath_offset = i * sizeof(void *);
-                    LOGD("field_realpath_offset is %zu * %zu = %p", i, sizeof(void *),
-                         (void *) SoInfo::field_realpath_offset);
-                    break;
-                }
+        if (!next_field_found) {
+            auto next_of_solinker = *reinterpret_cast<void **>(field_of_solinker);
+            if ((next_of_solinker == somain || (vdso != nullptr && next_of_solinker == vdso))) {
+                SoInfoWrapper::field_next_offset = i * sizeof(void *);
+                LOGD("heuristic field_next_offset is %zu * %zu = %p", i, sizeof(void *),
+                     reinterpret_cast<void *>(SoInfoWrapper::field_next_offset));
+                next_field_found = true;
+                continue;
+            }
+        }
+        if (!next_field_found) continue;
+
+        if (!constructor_called_field_found) {
+            auto link_map_head_of_solinker = reinterpret_cast<link_map *>(field_of_solinker);
+            // Calculate the number of alignment blocks needed to hold the address,
+            // then multiply by the alignment size to get the aligned address.
+            // This is an integer-based way to round UP to the next alignment boundary.
+            auto index_gap = (sizeof(link_map) + sizeof(void *) - 1) / sizeof(void *);
+            uintptr_t look_forward = field_of_solinker + index_gap * sizeof(void *);
+            bool *constructor_called_of_solinker = reinterpret_cast<bool *>(look_forward);
+            if (*constructor_called_of_solinker == true && link_map_head_of_solinker->l_addr != 0 &&
+                link_map_head_of_solinker->l_name != nullptr &&
+                strcmp(linker_name.c_str(), link_map_head_of_solinker->l_name) == 0) {
+                SoInfoWrapper::field_constructor_called_offset =
+                    look_forward - reinterpret_cast<uintptr_t>(solinker);
+                LOGD("heuristic field_constructor_called_offset is %p [link_map_head: %p]",
+                     reinterpret_cast<void *>(SoInfoWrapper::field_constructor_called_offset),
+                     reinterpret_cast<void *>(i * sizeof(void *)));
+                constructor_called_field_found = true;
+                i = i + index_gap;
+                continue;
+            }
+        }
+        if (!constructor_called_field_found) continue;
+
+        if (SoInfoWrapper::get_realpath_sym != nullptr) break;
+
+        std::string *realpath_of_solinker = reinterpret_cast<std::string *>(field_of_solinker);
+        if (realpath_of_solinker->size() == linker_realpath_size) {
+            if (strcmp(linker_name.c_str(), realpath_of_solinker->c_str()) == 0) {
+                SoInfoWrapper::field_realpath_offset = i * sizeof(void *);
+                LOGD("heuristic field_realpath_offset is %zu * %zu = %p", i, sizeof(void *),
+                     reinterpret_cast<void *>(SoInfoWrapper::field_realpath_offset));
+                break;
             }
         }
     }
 
-    return size_field_found && next_field_found;
+    return size_field_found && next_field_found && constructor_called_field_found;
 }
 
-bool dropSoPath(const char *target_path) {
+bool dropSoPath(const char *target_path, bool unload) {
     bool path_found = false;
     if (solinker == nullptr && !initialize()) {
         LOGE("failed to initialize solist before dropping paths");
@@ -184,10 +239,19 @@ bool dropSoPath(const char *target_path) {
     for (auto *iter = solinker; iter; iter = iter->getNext()) {
         if (iter->getPath() && strstr(iter->getPath(), target_path)) {
             SoList::ProtectedDataGuard guard;
-            LOGD("dropping solist record for %s with size %zu", iter->getPath(), iter->getSize());
-            if (iter->getSize() > 0) {
+            auto size = iter->getSize();
+            LOGD("dropping solist record for %s [size %zu, constructor_called: %d]",
+                 iter->getPath(), size, iter->getConstructorCalled());
+            if (size > 0) {
                 iter->setSize(0);
-                SoInfo::soinfo_free(iter);
+                if (unload) {
+                    iter->setConstructorCalled(false);
+                    SoInfoWrapper::soinfo_unload(iter);
+                    iter->setConstructorCalled(true);
+                } else {
+                    SoInfoWrapper::soinfo_free(iter);
+                    iter->setSize(size);
+                }
                 path_found = true;
             }
         }

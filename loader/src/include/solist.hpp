@@ -3,29 +3,32 @@
 #include <string>
 
 #include "elf_util.hpp"
+#include "linker_soinfo.h"
 
 namespace SoList {
-class SoInfo {
+class SoInfoWrapper {
 public:
-#ifdef __LP64__
-    inline static size_t field_size_offset = 0x18;
-    inline static size_t field_next_offset = 0x28;
-    inline static size_t field_realpath_offset = 0x1a0;
-#else
-    inline static size_t field_size_offset = 0x90;
-    inline static size_t field_next_offset = 0xa4;
-    inline static size_t field_realpath_offset = 0x17c;
-#endif
+    inline static size_t field_size_offset = soinfo::get_size_offset();
+    inline static size_t field_next_offset = soinfo::get_next_offset();
+    inline static size_t field_constructor_called_offset = soinfo::get_constructors_called_offset();
+    inline static size_t field_realpath_offset = soinfo::get_realpath_offset();
 
-    inline static const char *(*get_realpath_sym)(SoInfo *) = nullptr;
-    inline static void (*soinfo_free)(SoInfo *) = nullptr;
-
-    inline SoInfo *getNext() {
-        return *reinterpret_cast<SoInfo **>(reinterpret_cast<uintptr_t>(this) + field_next_offset);
-    }
+    inline static const char *(*get_realpath_sym)(SoInfoWrapper *) = nullptr;
+    inline static void (*soinfo_free)(SoInfoWrapper *) = nullptr;
+    inline static void (*soinfo_unload)(SoInfoWrapper *) = nullptr;
 
     inline size_t getSize() {
         return *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(this) + field_size_offset);
+    }
+
+    inline SoInfoWrapper *getNext() {
+        return *reinterpret_cast<SoInfoWrapper **>(reinterpret_cast<uintptr_t>(this) +
+                                                   field_next_offset);
+    }
+
+    inline bool getConstructorCalled() {
+        return *reinterpret_cast<bool *>(reinterpret_cast<uintptr_t>(this) +
+                                         field_constructor_called_offset);
     }
 
     inline const char *getPath() {
@@ -36,12 +39,18 @@ public:
             ->c_str();
     }
 
-    void setNext(SoInfo *info) {
-        *reinterpret_cast<SoInfo **>(reinterpret_cast<uintptr_t>(this) + field_next_offset) = info;
-    }
-
     void setSize(size_t size) {
         *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(this) + field_size_offset) = size;
+    }
+
+    void setNext(SoInfoWrapper *info) {
+        *reinterpret_cast<SoInfoWrapper **>(reinterpret_cast<uintptr_t>(this) + field_next_offset) =
+            info;
+    }
+
+    void setConstructorCalled(bool called) {
+        *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(this) +
+                                    field_constructor_called_offset) = called;
     }
 };
 
@@ -87,8 +96,8 @@ private:
     };
 };
 
-static SoInfo *solinker = nullptr;
-static SoInfo *somain = nullptr;
+static SoInfoWrapper *solinker = nullptr;
+static SoInfoWrapper *somain = nullptr;
 
 static uint64_t *g_module_load_counter = nullptr;
 static uint64_t *g_module_unload_counter = nullptr;
@@ -106,7 +115,8 @@ inline T *getStaticPointer(const SandHook::ElfImg &linker, const char *name) {
 }
 
 bool initialize();
-bool dropSoPath(const char *target_path);
+bool findHeuristicOffsets(std::string linker_name, SoInfoWrapper *vdso);
+bool dropSoPath(const char *target_pathn, bool unload);
 void resetCounters(size_t load, size_t unload);
 
 }  // namespace SoList
