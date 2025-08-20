@@ -12,4 +12,6 @@ void clean_linker_trace(const char *path, size_t loaded_modules, size_t unloaded
 
 void spoof_virtual_maps(const char *path, bool clear_write_permission);
 
+void spoof_zygote_fossil(char *search_from, char *search_to, const char *anchor);
+
 void send_seccomp_event_if_needed();
