@@ -248,7 +248,7 @@ fn handle_daemon_action(
         DaemonSocketAction::GetProcessFlags => {
             let uid = stream.read_u32()? as i32;
             let mut flags = ProcessFlags::empty();
-            if uid != 1000 && !IS_FIRST_PROCESS.initiated() {
+            if !IS_FIRST_PROCESS.initiated() {
                 flags |= ProcessFlags::IS_FIRST_PROCESS;
                 if root_impl::uid_is_systemui(uid) {
                     trace!("Uid {} is systemui", uid,);

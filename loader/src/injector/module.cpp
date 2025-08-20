@@ -395,44 +395,13 @@ void ZygiskContext::nativeForkSystemServer_pre() {
     LOGV("pre forkSystemServer\n");
     flags |= SERVER_FORK_AND_SPECIALIZE;
 
-    // Clean stack trace for KernelSU
-    info_flags = zygiskd::GetProcessFlags(1000);
-    if (info_flags & PROCESS_ROOT_IS_KSU) {
-        const std::vector<char> ksu_pattern = {'\0', '\0', 'K', 'S', 'U', '\0', '/'};
-
-        for (auto &map : g_hook->cached_map_infos) {
-            if (map.dev == 0 && map.inode == 0 && map.offset == 0 && map.is_private &&
-                map.path == "[anon:stack_and_tls:main]") {
-                auto search_from = reinterpret_cast<char *>(map.start);
-                auto search_to = reinterpret_cast<char *>(map.end);
-                LOGD("searching KSU trace in [%p-%p]", search_from, search_to);
-                char *found_location =
-                    std::search(search_from, search_to, ksu_pattern.begin(), ksu_pattern.end());
-
-                // Check if the pattern was found. std::search returns search_to if not found.
-                if (found_location == search_to) {
-                    LOGD("KSU trace signature was not found in [%p-%p]", search_from, search_to);
-                }
-                LOGD("found KSU trace signature at %p", found_location);
-
-                char *end_of_trace = found_location + ksu_pattern.size() - 1;
-                while (end_of_trace < search_to) {
-                    if (*end_of_trace == '\0' && *(end_of_trace + 1) == '\0') {
-                        break;
-                    }
-                    if (strlen(end_of_trace) > 10) {
-                        LOGD("mounting data in the trace: %s", end_of_trace);
-                    }
-                    end_of_trace += strlen(end_of_trace) + 1;
-                }
-                // Calculate the total size of the artifact to be cleaned.
-                size_t size_to_clean = end_of_trace - found_location;
-                LOGD("overwriting %zu bytes with zeros...", size_to_clean);
-
-                // Use memset to efficiently overwrite the entire memory block with zeros.
-                memset(found_location, 0, size_to_clean);
-                break;
-            }
+    for (auto &map : g_hook->cached_map_infos) {
+        if (map.dev == 0 && map.inode == 0 && map.offset == 0 && map.is_private &&
+            map.path == "[anon:stack_and_tls:main]") {
+            auto search_from = reinterpret_cast<char *>(map.start);
+            auto search_to = reinterpret_cast<char *>(map.end);
+            spoof_zygote_fossil(search_from, search_to, "ref_profiles");
+            break;
         }
     }
 

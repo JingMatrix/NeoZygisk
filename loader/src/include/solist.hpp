@@ -5,7 +5,7 @@
 #include "elf_util.hpp"
 #include "linker_soinfo.h"
 
-namespace SoList {
+namespace Linker {
 class SoInfoWrapper {
 public:
     inline static size_t field_size_offset = soinfo::get_size_offset();
@@ -119,4 +119,4 @@ bool findHeuristicOffsets(std::string linker_name, SoInfoWrapper *vdso);
 bool dropSoPath(const char *target_pathn, bool unload);
 void resetCounters(size_t load, size_t unload);
 
-}  // namespace SoList
+}  // namespace Linker
