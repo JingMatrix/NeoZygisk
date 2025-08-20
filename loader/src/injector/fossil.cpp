@@ -72,7 +72,7 @@ void MountArgv::cleanMemory() const {
         char* start_ptr = const_cast<char*>(m_start_address);
         LOGD("cleaning %zu bytes at address %p...", total_size,
              static_cast<const void*>(start_ptr));
-        memset(start_ptr, 0, m_remnant_size);
+        memset(start_ptr, 0, total_size);
         LOGD("memory cleaning complete.");
     }
 }
