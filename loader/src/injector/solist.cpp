@@ -207,11 +207,13 @@ void resetCounters(size_t load, size_t unload) {
     auto unloaded_modules = *g_module_unload_counter;
     if (loaded_modules >= load) {
         *g_module_load_counter = loaded_modules - load;
-        LOGD("reset g_module_load_counter to %zu", (size_t) *g_module_load_counter);
+        LOGD("reset g_module_load_counter to [%zu -> %zu]", (size_t) loaded_modules,
+             (size_t) *g_module_load_counter);
     }
     if (unloaded_modules >= unload) {
         *g_module_unload_counter = unloaded_modules - unload;
-        LOGD("reset g_module_unload_counter to %zu", (size_t) *g_module_unload_counter);
+        LOGD("reset g_module_unload_counter [%zu -> %zu]", (size_t) unloaded_modules,
+             (size_t) *g_module_unload_counter);
     }
 }
 }  // namespace Linker
