@@ -324,6 +324,7 @@ struct HookContext {
     bool should_spoof_maps = false;
     bool should_unmap = false;
     bool skip_hooking_unloader = false;
+    zygiskd::MountNamespace zygote_mns = zygiskd::MountNamespace::Root;
     jint MODIFIER_NATIVE = 0;
     jmethodID member_getModifiers = nullptr;
     std::vector<lsplt::MapInfo> cached_map_infos = {};
