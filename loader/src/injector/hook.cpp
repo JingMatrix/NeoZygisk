@@ -112,8 +112,8 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
         } else if (g_ctx->flags & DO_REVERT_UNMOUNT) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
-            old_unshare(CLONE_NEWNS); // remove gaps in mounting IDs
         }
+        old_unshare(CLONE_NEWNS);  // remove gaps in mounting IDs
     }
     // Restore errno back to 0
     errno = 0;
