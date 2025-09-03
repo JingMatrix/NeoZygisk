@@ -21,7 +21,6 @@ Here is how NeoZygisk manages visibility for different application states:
 | Application State | Mount Namespace Visibility | Description & Use Case |
 | :--- | :--- | :--- |
 | **Granted Root Privileges** | Root Solution Mounts + Module Mounts | For trusted applications that require full root access to function correctly (e.g., advanced file managers). |
-| **Standard App** <br/>*(Not on DenyList)* | **(APatch/KSU Only)** <br/> Module Mounts Only | Ideal for applying modules (like custom fonts or themes) to target apps without exposing the root environment. <br/> **Note:** This is not implemented for Magisk, as it requires root mounts to be visible for handling permission requests. |
 | **On DenyList** | Clean, Unmodified Mount Namespace | Provides a pristine environment for applications that perform root detection. The app's root privileges are revoked, and all traces of root and module mounts are hidden. |
 
 ## Configuration

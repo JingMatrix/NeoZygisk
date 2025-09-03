@@ -67,7 +67,7 @@ enum class SocketAction {
     SystemServerStarted,
 };
 
-enum class MountNamespace { Clean, Root, Module };
+enum class MountNamespace { Clean, Root };
 
 void Init(const char* path);
 

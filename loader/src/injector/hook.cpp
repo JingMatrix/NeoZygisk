@@ -110,12 +110,10 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
         !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE) && !(g_ctx->info_flags & IS_FIRST_PROCESS)) {
         if (g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
-        } else if (!(g_ctx->flags & DO_REVERT_UNMOUNT)) {
-            ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Module);
-        } else {
+        } else if (g_ctx->flags & DO_REVERT_UNMOUNT) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
+            old_unshare(CLONE_NEWNS); // remove gaps in mounting IDs
         }
-        old_unshare(CLONE_NEWNS);
     }
     // Restore errno back to 0
     errno = 0;

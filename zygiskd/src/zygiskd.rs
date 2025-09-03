@@ -97,7 +97,6 @@ pub fn main() -> Result<()> {
                 let pid = stream.read_u32()? as i32;
                 save_mount_namespace(pid, MountNamespace::Clean)?;
                 save_mount_namespace(pid, MountNamespace::Root)?;
-                save_mount_namespace(pid, MountNamespace::Module)?;
             }
             DaemonSocketAction::PingHeartbeat => {
                 let value = constants::ZYGOTE_INJECTED;
