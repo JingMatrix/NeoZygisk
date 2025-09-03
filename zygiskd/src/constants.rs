@@ -41,7 +41,6 @@ pub enum DaemonSocketAction {
 pub enum MountNamespace {
     Clean,
     Root,
-    Module,
 }
 
 // Zygisk process flags
