@@ -104,8 +104,7 @@ DCL_HOOK_FUNC(int, fork) { return (g_ctx && g_ctx->pid >= 0) ? g_ctx->pid : old_
 
 // Unmount stuffs in the process's private mount namespace
 DCL_HOOK_FUNC(static int, unshare, int flags) {
-    int res = old_unshare(flags);
-    if (g_ctx && (flags & CLONE_NEWNS) != 0 && res == 0 &&
+    if (g_ctx && (flags & CLONE_NEWNS) &&
         // Skip system server and the first app process since we don't need to hide traces for them
         !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE) && !(g_ctx->info_flags & IS_FIRST_PROCESS)) {
         if (g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) {
@@ -113,10 +112,10 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
         } else if (g_ctx->flags & DO_REVERT_UNMOUNT) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
         }
-        old_unshare(CLONE_NEWNS);  // remove gaps in mounting IDs
     }
-    // Restore errno back to 0
-    errno = 0;
+
+    int res = old_unshare(flags);
+    errno = 0;  // Restore errno back to 0
     return res;
 }
 
