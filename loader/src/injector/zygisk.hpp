@@ -15,6 +15,7 @@ struct mount_info {
     std::string type;
     std::string source;
     std::string fs_options;
+    std::string raw_info;
 };
 
 void hook_entry(void *start_addr, size_t block_size);

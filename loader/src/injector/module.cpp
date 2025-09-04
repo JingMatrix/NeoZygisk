@@ -422,6 +422,16 @@ void ZygiskContext::nativeForkSystemServer_post() {
     fork_post();
 }
 
+static bool contains_prohibited_traces(const std::vector<mount_info> &traces) {
+    for (const auto &trace : traces) {
+        if (trace.target.rfind("/product", 0) == 0) {
+            LOGV("Abort unmounting zygote due to prohibited target: [%s]", trace.raw_info.c_str());
+            return true;
+        }
+    }
+    return false;
+}
+
 void ZygiskContext::nativeForkAndSpecialize_pre() {
     process = env->GetStringUTFChars(args.app->nice_name, nullptr);
     LOGV("pre forkAndSpecialize [%s]\n", process);
@@ -431,26 +441,23 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
         info_flags = zygiskd::GetProcessFlags(args.app->uid);
         g_hook->zygote_traces = check_zygote_traces(info_flags);
 
-        auto removal_predicate = [](const mount_info &trace) {
-            LOGD("Unmounting %s (mnt_id: %u)", trace.target.c_str(), trace.id);
-            if (umount2(trace.target.c_str(), MNT_DETACH) == 0) {
-                return true;  // Success: Mark for removal.
-            } else {
-                LOGE("Failed to unmount %s: %s", trace.target.c_str(), strerror(errno));
-                return false;  // Failure: Keep this trace in the vector.
-            }
-        };
+        if (!contains_prohibited_traces(g_hook->zygote_traces)) {
+            auto removal_predicate = [](const mount_info &trace) {
+                LOGD("Unmounting %s (mnt_id: %u)", trace.target.c_str(), trace.id);
+                if (umount2(trace.target.c_str(), MNT_DETACH) == 0) {
+                    return true;  // Success: Mark for removal.
+                } else {
+                    LOGE("Failed to unmount %s: %s", trace.target.c_str(), strerror(errno));
+                    return false;  // Failure: Keep this trace in the vector.
+                }
+            };
 
-        // 1. std::remove_if rearranges the vector, moving all traces that
-        //    failed to unmount (where predicate is false) to the front.
-        //    It returns an iterator to the new logical end of the valid data.
-        auto new_end = std::remove_if(g_hook->zygote_traces.begin(), g_hook->zygote_traces.end(),
-                                      removal_predicate);
+            auto new_end = std::remove_if(g_hook->zygote_traces.begin(),
+                                          g_hook->zygote_traces.end(), removal_predicate);
 
-        // 2. Erase the now-unwanted elements from the new logical end to the
-        //    actual physical end of the vector.
-        g_hook->zygote_traces.erase(new_end, g_hook->zygote_traces.end());
-        g_hook->zygote_unmounted = true;
+            g_hook->zygote_traces.erase(new_end, g_hook->zygote_traces.end());
+            g_hook->zygote_unmounted = true;
+        }
     }
 
     fork_pre();

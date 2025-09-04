@@ -87,6 +87,7 @@ std::vector<mount_info> parse_mount_info(const char* pid) {
             info.fs_options = remaining_fs.substr(1);  // Trim leading space
         }
 
+        info.raw_info = line;
         result.push_back(std::move(info));
     }
     return result;

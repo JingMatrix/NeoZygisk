@@ -107,11 +107,17 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
     if (g_ctx && (flags & CLONE_NEWNS) &&
         // Skip system server and the first app process since we don't need to hide traces for them
         !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE) && !(g_ctx->info_flags & IS_FIRST_PROCESS)) {
-        if (g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) {
-            ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
-        } else if (!(g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0) &&
-                   (g_ctx->flags & DO_REVERT_UNMOUNT)) {
-            ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
+        bool is_zygote_clean = g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0;
+        if (is_zygote_clean) {
+            if (!(g_ctx->flags & DO_REVERT_UNMOUNT)) {
+                ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
+            }
+        } else {
+            if (g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) {
+                ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
+            } else if (g_ctx->flags & DO_REVERT_UNMOUNT) {
+                ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
+            }
         }
     }
 
