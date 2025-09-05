@@ -346,10 +346,6 @@ void ZygiskContext::app_specialize_pre() {
 
     if (info_flags == 0) info_flags = zygiskd::GetProcessFlags(uid);
 
-    if (info_flags & IS_FIRST_PROCESS) {
-        zygiskd::CacheMountNamespace(getpid());
-    }
-
     if ((info_flags & UNMOUNT_MASK) == UNMOUNT_MASK) {
         LOGI("[%s] is on the denylist\n", process);
         flags |= DO_REVERT_UNMOUNT;
@@ -374,6 +370,7 @@ void ZygiskContext::app_specialize_post() {
 void ZygiskContext::server_specialize_pre() {
     run_modules_pre();
     zygiskd::SystemServerStarted();
+    zygiskd::CacheMountNamespace(getpid());
 }
 
 void ZygiskContext::server_specialize_post() { run_modules_post(); }
@@ -447,10 +444,7 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
     if (!g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0) {
         info_flags = zygiskd::GetProcessFlags(args.app->uid);
 
-        // Skip checking zygote traces since mount namespaces are not cached yet
-        if (!(info_flags & IS_FIRST_PROCESS)) {
-            g_hook->zygote_traces = check_zygote_traces(info_flags);
-        }
+        g_hook->zygote_traces = check_zygote_traces(info_flags);
 
         if (!abort_zygote_unmount(g_hook->zygote_traces, info_flags)) {
             auto removal_predicate = [](const mount_info &trace) {

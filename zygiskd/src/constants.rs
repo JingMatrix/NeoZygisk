@@ -53,6 +53,5 @@ bitflags! {
         const PROCESS_ROOT_IS_APATCH = 1 << 28;
         const PROCESS_ROOT_IS_KSU = 1 << 29;
         const PROCESS_ROOT_IS_MAGISK = 1 << 30;
-        const IS_FIRST_PROCESS = 1 << 31;
     }
 }
