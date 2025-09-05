@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -342,7 +343,8 @@ void ZygiskContext::app_specialize_pre() {
             env->ReleaseStringUTFChars(args.app->app_data_dir, data_dir);
         }
     }
-    info_flags = zygiskd::GetProcessFlags(uid);
+
+    if (info_flags == 0) info_flags = zygiskd::GetProcessFlags(uid);
 
     if (info_flags & IS_FIRST_PROCESS) {
         zygiskd::CacheMountNamespace(getpid());
@@ -420,10 +422,59 @@ void ZygiskContext::nativeForkSystemServer_post() {
     fork_post();
 }
 
+static bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t info_flags) {
+    if (traces.size() == 0) {
+        LOGV("abort unmounting zygote with an empty trace list");
+        return true;
+    }
+    bool is_magisk = info_flags & PROCESS_ROOT_IS_MAGISK;
+    for (const auto &trace : traces) {
+        if (trace.target.rfind("/product", 0) == 0) {
+            if (trace.target.rfind("/product/bin", 0) == 0) continue;
+            if (!is_magisk && trace.target != "/product") continue;
+            LOGV("abort unmounting zygote due to prohibited target: [%s]", trace.raw_info.c_str());
+            return true;
+        }
+    }
+    return false;
+}
+
 void ZygiskContext::nativeForkAndSpecialize_pre() {
     process = env->GetStringUTFChars(args.app->nice_name, nullptr);
     LOGV("pre forkAndSpecialize [%s]\n", process);
     flags |= APP_FORK_AND_SPECIALIZE;
+
+    if (!g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0) {
+        info_flags = zygiskd::GetProcessFlags(args.app->uid);
+
+        // Skip checking zygote traces since mount namespaces are not cached yet
+        if (!(info_flags & IS_FIRST_PROCESS)) {
+            g_hook->zygote_traces = check_zygote_traces(info_flags);
+        }
+
+        if (!abort_zygote_unmount(g_hook->zygote_traces, info_flags)) {
+            auto removal_predicate = [](const mount_info &trace) {
+                if (trace.source == "magisk") {
+                    LOGD("skip magisk specific mounts for compatibility: %s",
+                         trace.raw_info.c_str());
+                    return false;
+                }
+                LOGD("unmounting %s (mnt_id: %u)", trace.target.c_str(), trace.id);
+                if (umount2(trace.target.c_str(), MNT_DETACH) == 0) {
+                    return true;  // Success: Mark for removal.
+                } else {
+                    LOGE("failed to unmount %s: %s", trace.target.c_str(), strerror(errno));
+                    return false;  // Failure: Keep this trace in the vector.
+                }
+            };
+
+            auto new_end = std::remove_if(g_hook->zygote_traces.begin(),
+                                          g_hook->zygote_traces.end(), removal_predicate);
+
+            g_hook->zygote_traces.erase(new_end, g_hook->zygote_traces.end());
+            g_hook->zygote_unmounted = true;
+        }
+    }
 
     fork_pre();
     if (is_child()) {

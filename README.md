@@ -21,7 +21,15 @@ Here is how NeoZygisk manages visibility for different application states:
 | Application State | Mount Namespace Visibility | Description & Use Case |
 | :--- | :--- | :--- |
 | **Granted Root Privileges** | Root Solution Mounts + Module Mounts | For trusted applications that require full root access to function correctly (e.g., advanced file managers). |
-| **On DenyList** | Clean, Unmodified Mount Namespace | Provides a pristine environment for applications that perform root detection. The app's root privileges are revoked, and all traces of root and module mounts are hidden. |
+| **On DenyList** | Clean, Unmodified Mount Namespace | Provides a pristine environment for applications that perform root detection. The app's root privileges might be revoked, and all traces of root and module mounts are hidden. |
+
+To achieve a clean mount namespace for applications on the DenyList, NeoZygisk employs two distinct strategies: a primary, aggressive approach and a reliable fallback.
+
+1.  **Direct Zygote Unmounting (Primary Strategy)**
+    As an experimental feature for bypassing advanced detection, NeoZygisk attempts to unmount all root-related traces directly from the zygote process itself. This cleans the environment *before* an application process is fully specialized, offering a potentially more robust hiding mechanism. To ensure system stability, this operation is only performed after a strict safety check. If a module is providing critical system resources (e.g., an overlay in `/product`), this direct unmount is aborted to prevent a zygote crash.
+
+2.  **Namespace Switching (Fallback Strategy)**
+    If the direct unmount strategy is aborted for safety, or if any traces failed to unmount, NeoZygisk reverts to its standard, reliable method. After an app process forks, the `setns` syscall is used to switch it into a cached, completely clean mount namespace, effectively isolating it from all system modifications.
 
 ## Configuration
 
