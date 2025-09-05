@@ -449,9 +449,9 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
         if (!abort_zygote_unmount(g_hook->zygote_traces, info_flags)) {
             auto removal_predicate = [](const mount_info &trace) {
                 if (trace.source == "magisk") {
-                    LOGD("skip magisk specific mounts for compatibility: %s",
+                    LOGD("[dry_run] skip magisk specific mounts for compatibility: %s",
                          trace.raw_info.c_str());
-                    return false;
+                    // return false;
                 }
                 LOGD("unmounting %s (mnt_id: %u)", trace.target.c_str(), trace.id);
                 if (umount2(trace.target.c_str(), MNT_DETACH) == 0) {
