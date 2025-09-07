@@ -3,10 +3,19 @@
 
 #include <lsplt.hpp>
 
+#include "atexit.hpp"
 #include "fossil.hpp"
 #include "logging.hpp"
 #include "solist.hpp"
 #include "zygisk.hpp"
+
+void clean_libc_trace() {
+    auto g_array = Atexit::findAtexitArray();
+    if (g_array != nullptr) {
+        g_array->recompact();
+        LOGD("g_array after recompact: %s", g_array->format_state_string().c_str());
+    }
+}
 
 void clean_linker_trace(const char *path, size_t loaded_modules, size_t unloaded_modules,
                         bool unload_soinfo) {
