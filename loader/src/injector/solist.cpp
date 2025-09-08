@@ -5,7 +5,7 @@
 namespace Linker {
 
 bool initialize() {
-    SandHook::ElfImg linker("/linker");
+    ElfParser::ElfImage linker("/linker");
     if (!ProtectedDataGuard::setup(linker)) return false;
     LOGD("found symbol ProtectedDataGuard");
 
@@ -44,45 +44,47 @@ bool initialize() {
     char vdso_sym_name[sizeof("__dl__ZL4vdso") + sizeof(llvm_sufix)];
     snprintf(vdso_sym_name, sizeof(vdso_sym_name), "__dl__ZL4vdso%s", llvm_sufix);
 
-    solinker = getStaticPointer<SoInfoWrapper>(linker, solinker_sym_name);
+    solinker = ElfParser::resolveSymbolPointer<SoInfoWrapper>(linker, solinker_sym_name);
     if (solinker == nullptr) {
-        solinker = getStaticPointer<SoInfoWrapper>(linker, solist_sym_name);
+        solinker = ElfParser::resolveSymbolPointer<SoInfoWrapper>(linker, solist_sym_name);
         if (solinker == nullptr) return false;
         LOGD("found symbol solist at %p", solinker);
     } else {
         LOGD("found symbol solinker at %p", solinker);
     }
 
-    auto *vdso = getStaticPointer<SoInfoWrapper>(linker, vdso_sym_name);
+    auto *vdso = ElfParser::resolveSymbolPointer<SoInfoWrapper>(linker, vdso_sym_name);
     if (vdso != nullptr) LOGD("found symbol vdso at %p", vdso);
 
-    SoInfoWrapper::get_realpath_sym = reinterpret_cast<decltype(SoInfoWrapper::get_realpath_sym)>(
-        linker.getSymbAddress("__dl__ZNK6soinfo12get_realpathEv"));
+    SoInfoWrapper::get_realpath_sym =
+        ElfParser::findDirectSymbol<decltype(SoInfoWrapper::get_realpath_sym)>(
+            linker, "__dl__ZNK6soinfo12get_realpathEv");
     if (SoInfoWrapper::get_realpath_sym != nullptr) LOGD("found symbol get_realpath_sym");
 
-    SoInfoWrapper::soinfo_free = reinterpret_cast<decltype(SoInfoWrapper::soinfo_free)>(
-        linker.getSymbAddress(soinfo_free_name));
+    SoInfoWrapper::soinfo_free =
+        ElfParser::findDirectSymbol<decltype(SoInfoWrapper::soinfo_free)>(linker, soinfo_free_name);
     if (SoInfoWrapper::soinfo_free == nullptr) return false;
     LOGD("found symbol soinfo_free");
 
-    SoInfoWrapper::soinfo_unload = reinterpret_cast<decltype(SoInfoWrapper::soinfo_unload)>(
-        linker.getSymbAddress(soinfo_unload_name));
+    SoInfoWrapper::soinfo_unload =
+        ElfParser::findDirectSymbol<decltype(SoInfoWrapper::soinfo_unload)>(linker,
+                                                                            soinfo_unload_name);
     if (SoInfoWrapper::soinfo_unload == nullptr) return false;
     LOGD("found symbol soinfo_unload");
 
-    g_module_load_counter = reinterpret_cast<decltype(g_module_load_counter)>(
-        linker.getSymbAddress("__dl__ZL21g_module_load_counter"));
+    g_module_load_counter =
+        ElfParser::findDirectSymbol<uint64_t>(linker, "__dl__ZL21g_module_load_counter");
     if (g_module_load_counter != nullptr) LOGD("found symbol g_module_load_counter");
 
-    g_module_unload_counter = reinterpret_cast<decltype(g_module_unload_counter)>(
-        linker.getSymbAddress("__dl__ZL23g_module_unload_counter"));
+    g_module_unload_counter =
+        ElfParser::findDirectSymbol<uint64_t>(linker, "__dl__ZL23g_module_unload_counter");
     if (g_module_unload_counter != nullptr) LOGD("found symbol g_module_unload_counter");
 
-    somain = getStaticPointer<SoInfoWrapper>(linker, somain_sym_name.data());
+    somain = ElfParser::resolveSymbolPointer<SoInfoWrapper>(linker, somain_sym_name.data());
     if (somain == nullptr) return false;
     LOGD("found symbol somain at %p", somain);
 
-    return findHeuristicOffsets(linker.name(), vdso);
+    return findHeuristicOffsets(linker.getLibraryPath(), vdso);
 }
 
 bool findHeuristicOffsets(std::string linker_name, SoInfoWrapper *vdso) {
