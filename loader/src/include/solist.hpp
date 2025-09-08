@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "elf_util.hpp"
+#include "elf_parser.hpp"
 #include "linker_soinfo.h"
 
 namespace Linker {
@@ -64,13 +64,13 @@ public:
         if (dtor != nullptr) (this->*dtor)();
     }
 
-    static bool setup(const SandHook::ElfImg &linker) {
+    static bool setup(const ElfParser::ElfImage &linker) {
         ctor = MemFunc{.data = {.p = reinterpret_cast<void *>(
-                                    linker.getSymbAddress("__dl__ZN18ProtectedDataGuardC2Ev")),
+                                    linker.findSymbolAddress("__dl__ZN18ProtectedDataGuardC2Ev")),
                                 .adj = 0}}
                    .f;
         dtor = MemFunc{.data = {.p = reinterpret_cast<void *>(
-                                    linker.getSymbAddress("__dl__ZN18ProtectedDataGuardD2Ev")),
+                                    linker.findSymbolAddress("__dl__ZN18ProtectedDataGuardD2Ev")),
                                 .adj = 0}}
                    .f;
         return ctor != nullptr && dtor != nullptr;
@@ -106,13 +106,6 @@ const size_t size_block_range = 1024;
 const size_t size_maximal = 0x100000;
 const size_t size_minimal = 0x100;
 const size_t llvm_suffix_length = 25;
-
-template <typename T>
-inline T *getStaticPointer(const SandHook::ElfImg &linker, const char *name) {
-    auto *addr = reinterpret_cast<T **>(linker.getSymbAddress(name));
-
-    return addr == nullptr ? nullptr : *addr;
-}
 
 bool initialize();
 bool findHeuristicOffsets(std::string linker_name, SoInfoWrapper *vdso);

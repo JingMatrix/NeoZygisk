@@ -1,14 +1,7 @@
 #include "atexit.hpp"
 
-#include "elf_util.hpp"
+#include "elf_parser.hpp"
 #include "logging.hpp"
-
-template <typename T>
-inline T *getExportedFieldPointer(const SandHook::ElfImg &libc, const char *name) {
-    auto *addr = reinterpret_cast<T *>(libc.getSymbAddress(name));
-
-    return addr == nullptr ? nullptr : addr;
-}
 
 namespace Atexit {
 
@@ -65,12 +58,12 @@ void AtexitArray::set_writable(bool writable, size_t start_idx, size_t num_entri
 }
 
 AtexitArray *findAtexitArray() {
-    SandHook::ElfImg libc("libc.so");
-    auto p_array = getExportedFieldPointer<AtexitEntry *>(libc, "_ZL7g_array.0");
-    auto p_size = getExportedFieldPointer<size_t>(libc, "_ZL7g_array.1");
-    auto p_extracted_count = getExportedFieldPointer<size_t>(libc, "_ZL7g_array.2");
-    auto p_capacity = getExportedFieldPointer<size_t>(libc, "_ZL7g_array.3");
-    auto p_total_appends = getExportedFieldPointer<uint64_t>(libc, "_ZL7g_array.4");
+    ElfParser::ElfImage libc("libc.so");
+    auto p_array = ElfParser::findDirectSymbol<AtexitEntry *>(libc, "_ZL7g_array.0");
+    auto p_size = ElfParser::findDirectSymbol<size_t>(libc, "_ZL7g_array.1");
+    auto p_extracted_count = ElfParser::findDirectSymbol<size_t>(libc, "_ZL7g_array.2");
+    auto p_capacity = ElfParser::findDirectSymbol<size_t>(libc, "_ZL7g_array.3");
+    auto p_total_appends = ElfParser::findDirectSymbol<uint64_t>(libc, "_ZL7g_array.4");
 
     if (p_array == nullptr || p_size == nullptr || p_extracted_count == nullptr ||
         p_capacity == nullptr || p_total_appends == nullptr) {
