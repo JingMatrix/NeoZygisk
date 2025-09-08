@@ -2,11 +2,6 @@ name: CI
 
 on:
   workflow_dispatch:
-    inputs:
-      post_telegram:
-        description: 'Post to Telegram'
-        required: true
-        type: boolean
   push:
     branches: [ master ]
     tags: [ v* ]
@@ -16,40 +11,27 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
-      CCACHE_BASEDIR: "${{ github.workspace }}"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      # ====================================================================
+      # 1. SETUP ENVIRONMENT
+      # ====================================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           submodules: "recursive"
-          fetch-depth: 0
-
-      - name: Write key
-        if: ${{ ( github.event_name != 'pull_request' && github.ref == 'refs/heads/master' ) || github.ref_type == 'tag' }}
-        run: |
-          if [ ! -z "${{ secrets.PRIVATE_KEY }}" ]; then
-            echo '${{ secrets.PUBLIC_KEY }}' | base64 --decode > module/public_key
-            echo '${{ secrets.PRIVATE_KEY }}' | base64 --decode > module/private_key
-          fi
+          fetch-depth: 0 # Needed for versioning from git history
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: "temurin"
           java-version: "21"
 
-      - name: Setup rust-cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: zygiskd/src -> ../build/intermediates/rust
-          cache-targets: false
-          
-      - name: Setup Rust
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Rust toolchain
         run: |
           rustup override set nightly
           rustup target add aarch64-linux-android
@@ -57,87 +39,61 @@ jobs:
           rustup target add i686-linux-android
           rustup target add armv7-linux-androideabi
 
-      - name: Setup ccache
-        uses: actions/cache@v4
+      - name: Setup Ccache for faster builds
+        uses: hendrikmuhs/ccache-action@v1
         with:
-          path: |
-            ~/.ccache
-            ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-ccache-${{ hashFiles('**/build.gradle') }}-${{ hashFiles('**/CMakeLists.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-ccache-
+          key: ${{ github.job }}-${{ runner.os }}-${{ hashFiles('**/build.gradle.kts', '**/gradle.properties') }}
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zygiskd/src -> ../build/intermediates/rust
 
-      - name: Remove Android's cmake
-        shell: bash
-        run: rm -rf $ANDROID_HOME/cmake
-
+      # ====================================================================
+      # 2. CONFIGURE AND BUILD
+      # ====================================================================
       - name: Build with Gradle
-        run: |
-          echo 'org.gradle.parallel=true' >> gradle.properties
-          echo 'org.gradle.vfs.watch=true' >> gradle.properties
-          echo 'org.gradle.jvmargs=-Xmx2048m' >> gradle.properties
-          echo 'android.native.buildOutput=verbose' >> gradle.properties
-          sed -i 's/org.gradle.unsafe.configuration-cache=true//g' gradle.properties
-          ./gradlew zipRelease
-          ./gradlew zipDebug
+        run: ./gradlew zipRelease zipDebug -Porg.gradle.parallel=true -Porg.gradle.vfs.watch=true -Dorg.gradle.jvmargs=-Xmx2048m
 
-      - name: Prepare artifact
+      # ====================================================================
+      # 3. PREPARE AND UPLOAD ARTIFACTS
+      # ====================================================================
+      - name: Prepare build artifacts
         if: success()
-        id: prepareArtifact
+        id: prepare_artifacts
         run: |
-          releaseName=`ls module/build/outputs/release/NeoZygisk-v*-release.zip | awk -F '(/|.zip)' '{print $5}'` && echo "releaseName=$releaseName" >> $GITHUB_OUTPUT
-          debugName=`ls module/build/outputs/release/NeoZygisk-v*-debug.zip | awk -F '(/|.zip)' '{print $5}'` && echo "debugName=$debugName" >> $GITHUB_OUTPUT
-          unzip module/build/outputs/release/NeoZygisk-v*-release.zip -d zksu-release
-          unzip module/build/outputs/release/NeoZygisk-v*-debug.zip -d zksu-debug
-          releaseSymbolName="SYMBOLS-$releaseName.zip"
-          debugSymbolName="SYMBOLS-$debugName.zip"
-          echo "releaseSymbolName=$releaseSymbolName" >> $GITHUB_OUTPUT
-          echo "debugSymbolName=$debugSymbolName" >> $GITHUB_OUTPUT
-          zip -r $releaseSymbolName zygiskd/build/symbols/release
-          zip -r $debugSymbolName zygiskd/build/symbols/debug
+          RELEASE_ZIP=$(find module/build/outputs/release -type f -name 'NeoZygisk-v*-release.zip')
+          DEBUG_ZIP=$(find module/build/outputs/release -type f -name 'NeoZygisk-v*-debug.zip')
 
-      - name: Upload release
+          RELEASE_NAME=$(basename "$RELEASE_ZIP" .zip)
+          DEBUG_NAME=$(basename "$DEBUG_ZIP" .zip)
+
+          echo "RELEASE_NAME=${RELEASE_NAME}" >> $GITHUB_OUTPUT
+          echo "DEBUG_NAME=${DEBUG_NAME}" >> $GITHUB_OUTPUT
+
+          unzip "$RELEASE_ZIP" -d "release-artifact"
+          unzip "$DEBUG_ZIP" -d "debug-artifact"
+
+      - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.prepareArtifact.outputs.releaseName }}
-          path: "./zksu-release/*"
+          name: ${{ steps.prepare_artifacts.outputs.RELEASE_NAME }}
+          path: release-artifact/
 
-      - name: Upload debug
+      - name: Upload Debug Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.prepareArtifact.outputs.debugName }}
-          path: "./zksu-debug/*"
+          name: ${{ steps.prepare_artifacts.outputs.DEBUG_NAME }}
+          path: debug-artifact/
 
-      - name: Upload release symbols
+      - name: Upload Release Symbols
         uses: actions/upload-artifact@v4
         with:
           name: release-symbols
-          path: "zygiskd/build/symbols/release"
+          path: zygiskd/build/symbols/release/
 
-      - name: Upload debug symbols
+      - name: Upload Debug Symbols
         uses: actions/upload-artifact@v4
         with:
           name: debug-symbols
-          path: "zygiskd/build/symbols/debug"
-          
-      - name: Post to channel
-        if: ${{ success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && github.ref_type != 'tag' && inputs.post_telegram != 'false' }}
-        env:
-          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          COMMIT_URL: ${{ github.event.head_commit.url }}
-          COMMIT_ID: ${{ github.event.head_commit.id }}
-        run: |
-          if [ ! -z "${{ secrets.BOT_TOKEN }}" ]; then
-            OUTPUT="module/build/outputs/release"
-            export Release=$(find $OUTPUT -name "NeoZygisk-v*-release.zip")
-            export Debug=$(find $OUTPUT -name "NeoZygisk-v*-debug.zip")
-            export ReleaseSymbol="${{ steps.prepareArtifact.outputs.releaseSymbolName }}"
-            export DebugSymbol="${{ steps.prepareArtifact.outputs.debugSymbolName }}"
-            URL=$(python3 .github/scripts/telegram_url.py)
-            curl -v "$URL" -F Release="@$Release" -F Debug="@$Debug" -F ReleaseSymbol="@$ReleaseSymbol" -F DebugSymbol="@$DebugSymbol" 
-          fi
+          path: zygiskd/build/symbols/debug/
