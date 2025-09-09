@@ -59,19 +59,46 @@ void AtexitArray::set_writable(bool writable, size_t start_idx, size_t num_entri
 
 AtexitArray *findAtexitArray() {
     ElfParser::ElfImage libc("libc.so");
-    auto p_array = ElfParser::findDirectSymbol<AtexitEntry *>(libc, "_ZL7g_array.0");
-    auto p_size = ElfParser::findDirectSymbol<size_t>(libc, "_ZL7g_array.1");
-    auto p_extracted_count = ElfParser::findDirectSymbol<size_t>(libc, "_ZL7g_array.2");
-    auto p_capacity = ElfParser::findDirectSymbol<size_t>(libc, "_ZL7g_array.3");
-    auto p_total_appends = ElfParser::findDirectSymbol<uint64_t>(libc, "_ZL7g_array.4");
-
-    if (p_array == nullptr || p_size == nullptr || p_extracted_count == nullptr ||
-        p_capacity == nullptr || p_total_appends == nullptr) {
-        LOGD("failed to find exported g_array fields in memory");
+    if (!libc.isValid()) {
+        LOGE("Failed to load libc.so for atexit parsing.");
         return nullptr;
     }
 
-    return reinterpret_cast<AtexitArray *>(p_array);
-}
+    AtexitArray *g_array = nullptr;
 
+    // --- Primary Method: Modern, component-based symbol ---
+    // On many modern systems, the `g_array` struct is exported as individual
+    // global variables. The symbol `_ZL7g_array.0` points to the first field,
+    // which is the start of the effective AtexitArray struct in memory.
+    auto p_array_start = ElfParser::findDirectSymbol<void *>(libc, "_ZL7g_array.0");
+    if (p_array_start != nullptr) {
+        LOGD("Found modern atexit symbol '_ZL7g_array.0' at %p", p_array_start);
+        g_array = reinterpret_cast<AtexitArray *>(p_array_start);
+    } else {
+        // --- Fallback Method: Legacy, monolithic symbol ---
+        // On older systems, the entire AtexitArray struct was exported under a single symbol name.
+        LOGD("Modern atexit symbol not found, trying legacy '_ZL7g_array'");
+        g_array = ElfParser::findDirectSymbol<AtexitArray>(libc, "_ZL7g_array");
+    }
+
+    // --- Validation ---
+    if (g_array == nullptr) {
+        LOGE("Failed to find any 'g_array' symbol for atexit in libc.so");
+        return nullptr;
+    }
+
+    // A sanity check to ensure we are pointing to a valid structure and not
+    // garbage memory. An abnormally large size is a strong indicator of an error.
+    constexpr size_t MAX_REASONABLE_ATEXIT_ENTRIES = 4096 * 16;
+    if (g_array->size() < MAX_REASONABLE_ATEXIT_ENTRIES) {
+        LOGD("Successfully validated atexit array at %p with size: %zu", g_array, g_array->size());
+    } else {
+        LOGE(
+            "Found atexit array symbol at %p, but its size (%zu) is unreasonably large. Assuming invalid.",
+            g_array, g_array->size());
+        return nullptr;
+    }
+
+    return g_array;
+}
 }  // namespace Atexit
