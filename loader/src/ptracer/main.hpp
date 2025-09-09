@@ -1,6 +1,5 @@
 #pragma once
 
-
 void init_monitor();
 bool trace_zygote(int pid);
 
@@ -17,5 +16,3 @@ enum Command {
     DAEMON32_SET_ERROR_INFO = 9,
     SYSTEM_SERVER_STARTED = 10
 };
-
-void send_control_command(Command cmd);
