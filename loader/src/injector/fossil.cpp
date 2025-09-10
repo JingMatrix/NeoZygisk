@@ -34,7 +34,7 @@ MountArgv MountArgv::find(char* search_from, char* search_to) {
     for (char* p = search_from; p < search_to; ++p) {
         MountArgv mount_argv(p, search_to);
         if (mount_argv.isValid() && mount_argv.passesHeuristics()) {
-            LOGD("Found a high-confidence fossil at address %p", static_cast<void*>(p));
+            LOGV("found a high-confidence fossil at address %p", static_cast<void*>(p));
             return mount_argv;
         }
     }
@@ -43,11 +43,11 @@ MountArgv MountArgv::find(char* search_from, char* search_to) {
 
 void MountArgv::writeToMemory() const {
     if (!isValid()) {
-        LOGD("cannot write an invalid fossil to memory.");
+        LOGV("cannot write an invalid fossil to memory.");
         return;
     }
 
-    LOGD("writing fossil data to %p...", static_cast<const void*>(m_start_address));
+    LOGV("writing fossil data to %p...", static_cast<const void*>(m_start_address));
     char* ptr = const_cast<char*>(m_start_address);
 
     memcpy(ptr, m_source.c_str(), m_source.length() + 1);
@@ -64,16 +64,16 @@ void MountArgv::writeToMemory() const {
 
 void MountArgv::cleanMemory() const {
     if (!isValid()) {
-        LOGD("cannot clean remnants of an invalid fossil.");
+        LOGV("cannot clean remnants of an invalid fossil.");
         return;
     }
     auto total_size = m_fossil_size + m_remnant_size;
     if (total_size > 0) {
         char* start_ptr = const_cast<char*>(m_start_address);
-        LOGD("cleaning %zu bytes at address %p...", total_size,
+        LOGV("cleaning %zu bytes at address %p...", total_size,
              static_cast<const void*>(start_ptr));
         memset(start_ptr, 0, total_size);
-        LOGD("memory cleaning complete.");
+        LOGV("memory cleaning complete.");
     }
 }
 
@@ -88,21 +88,34 @@ size_t MountArgv::getRemnantSize() const { return m_remnant_size; }
 size_t MountArgv::getFossilSize() const { return m_fossil_size; }
 const char* MountArgv::getStartAddress() const { return m_start_address; }
 
-void MountArgv::dumpToLog() const {
+void MountArgv::dump(const char* summary) const {
     if (!m_valid) {
         LOGD("MountArgvFossil is not valid.");
         return;
     }
-    LOGD("--- Parsed Mount Argument Vector Fossil ---");
-    LOGD("  Start Address : %p", static_cast<const void*>(m_start_address));
-    LOGD("  Fossil Size   : %zu bytes", m_fossil_size);
-    LOGD("  Source        : '%s'", m_source.c_str());
-    LOGD("  Target        : '%s'", m_target.c_str());
-    LOGD("  FS Type       : '%s'", m_filesystem_type.c_str());
-    LOGD("  Options       : '%s'", m_mount_options.c_str());
-    LOGD("  Base Flags    : 0x%08x", m_base_flags);
-    LOGD("  Remnant Size  : %zu bytes (until '\\0\\0')", m_remnant_size);
-    LOGD("-------------------------------------------");
+
+    // Use std::ostringstream to build the entire log message in memory first.
+    // Using tabs (`\t`) for indentation allows the log viewer to control the
+    // visual alignment.
+    std::ostringstream oss;
+
+    oss << "--- Parsed Mount Argument Vector Fossil ---\n"
+        << "\tStart Address:\t" << static_cast<const void*>(m_start_address) << "\n"
+        << "\tFossil Size:\t" << m_fossil_size << " bytes\n"
+        << "\tSource:\t\t\t'" << m_source << "'\n"
+        << "\tTarget:\t\t\t'" << m_target << "'\n"
+        << "\tFS Type:\t\t'" << m_filesystem_type << "'\n"
+        << "\tOptions:\t\t'" << m_mount_options
+        << "'\n"
+        // Use std::hex and std::showbase for clean, reliable "0x..." formatting.
+        << "\tBase Flags:\t\t" << std::showbase << std::hex << m_base_flags
+        << "\n"
+        // std::dec is needed to switch back to decimal for subsequent numbers.
+        << "\tRemnant Size:\t" << std::dec << m_remnant_size << " bytes (until '\\0\\0')\n"
+        << "-------------------------------------------";
+
+    // Issue a single, atomic log call with the fully formatted string.
+    LOGV("%s\n%s", summary, oss.str().c_str());
 }
 
 // --- Private Implementation ---

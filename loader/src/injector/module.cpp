@@ -321,7 +321,7 @@ void ZygiskContext::run_modules_post() {
     }
 
     if (modules.size() > 0) {
-        LOGD("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
+        LOGV("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         if (modules.size() == modules_unloaded) clean_libc_trace();
         clean_linker_trace("jit-cache-zygisk", modules.size(), modules_unloaded, true);
         g_hook->should_spoof_maps =
@@ -339,7 +339,7 @@ void ZygiskContext::app_specialize_pre() {
             struct stat st;
             if (stat(data_dir, &st) != -1) {
                 uid = st.st_uid;
-                LOGD("identify isolated service [uid:%d, data_dir:%s]", uid, data_dir);
+                LOGV("identify isolated service [uid:%d, data_dir:%s]", uid, data_dir);
             }
             env->ReleaseStringUTFChars(args.app->app_data_dir, data_dir);
         }
@@ -348,7 +348,7 @@ void ZygiskContext::app_specialize_pre() {
     if (info_flags == 0) info_flags = zygiskd::GetProcessFlags(uid);
 
     if ((info_flags & UNMOUNT_MASK) == UNMOUNT_MASK) {
-        LOGI("[%s] is on the denylist\n", process);
+        LOGI("[%s] is on the denylist", process);
         flags |= DO_REVERT_UNMOUNT;
     }
 
@@ -380,19 +380,19 @@ void ZygiskContext::server_specialize_post() { run_modules_post(); }
 
 void ZygiskContext::nativeSpecializeAppProcess_pre() {
     process = env->GetStringUTFChars(args.app->nice_name, nullptr);
-    LOGV("pre specialize [%s]\n", process);
+    LOGV("pre specialize [%s]", process);
     // App specialize does not check FD
     flags |= SKIP_CLOSE_LOG_PIPE;
     app_specialize_pre();
 }
 
 void ZygiskContext::nativeSpecializeAppProcess_post() {
-    LOGV("post specialize [%s]\n", process);
+    LOGV("post specialize [%s]", process);
     app_specialize_post();
 }
 
 void ZygiskContext::nativeForkSystemServer_pre() {
-    LOGV("pre forkSystemServer\n");
+    LOGV("pre forkSystemServer");
     flags |= SERVER_FORK_AND_SPECIALIZE;
 
     for (auto &map : g_hook->cached_map_infos) {
@@ -414,7 +414,7 @@ void ZygiskContext::nativeForkSystemServer_pre() {
 
 void ZygiskContext::nativeForkSystemServer_post() {
     if (is_child()) {
-        LOGV("post forkSystemServer\n");
+        LOGV("post forkSystemServer");
         server_specialize_post();
     }
     fork_post();
@@ -439,7 +439,7 @@ static bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t
 
 void ZygiskContext::nativeForkAndSpecialize_pre() {
     process = env->GetStringUTFChars(args.app->nice_name, nullptr);
-    LOGV("pre forkAndSpecialize [%s]\n", process);
+    LOGV("pre forkAndSpecialize [%s]", process);
     flags |= APP_FORK_AND_SPECIALIZE;
 
     if (!g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0) {
@@ -450,11 +450,11 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
         if (!abort_zygote_unmount(g_hook->zygote_traces, info_flags)) {
             auto removal_predicate = [](const mount_info &trace) {
                 if (trace.source == "magisk") {
-                    LOGD("skip magisk specific mounts for compatibility: %s",
+                    LOGV("skip magisk specific mounts for compatibility: %s",
                          trace.raw_info.c_str());
                     return false;
                 }
-                LOGD("unmounting %s (mnt_id: %u)", trace.target.c_str(), trace.id);
+                LOGV("unmounting %s (mnt_id: %u)", trace.target.c_str(), trace.id);
                 if (umount2(trace.target.c_str(), MNT_DETACH) == 0) {
                     return true;  // Success: Mark for removal.
                 } else {
@@ -481,7 +481,7 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
 
 void ZygiskContext::nativeForkAndSpecialize_post() {
     if (is_child()) {
-        LOGV("post forkAndSpecialize [%s]\n", process);
+        LOGV("post forkAndSpecialize [%s]", process);
         app_specialize_post();
     }
     fork_post();
@@ -498,7 +498,7 @@ bool ZygiskContext::update_mount_namespace(zygiskd::MountNamespace namespace_typ
 
     auto updated_ns = open(ns_path.data(), O_RDONLY);
     if (updated_ns >= 0) {
-        LOGD("set mount namespace to [%s] fd=[%d]\n", ns_path.data(), updated_ns);
+        LOGV("set mount namespace to [%s] fd=[%d]", ns_path.data(), updated_ns);
         setns(updated_ns, CLONE_NEWNS);
     } else {
         PLOGE("open mount namespace [%s]", ns_path.data());

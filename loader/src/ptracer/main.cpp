@@ -21,7 +21,6 @@ using namespace std::string_view_literals;
 // The main entry point for the monitoring process.
 void init_monitor() {
     LOGI("NeoZygisk %s", ZKSU_VERSION);
-    LOGI("init monitor started");
 
     // All logic is now encapsulated in an AppMonitor instance.
     AppMonitor monitor;

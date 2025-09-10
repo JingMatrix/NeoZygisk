@@ -133,7 +133,7 @@ DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *defau
             if (*old_func == old_property_get) {
                 if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr) ||
                     !lsplt::CommitHook(g_hook->cached_map_infos, true)) {
-                    LOGD("failed to unhook property_get");
+                    PLOGE("unhook property_get");
                 } else {
                     // A reverse_iterator must be converted to a forward iterator.
                     // The `base()` of the *next* iterator gives the correct position.
@@ -168,7 +168,7 @@ DCL_HOOK_FUNC(static int, pthread_attr_setstacksize, void *target, size_t size) 
             // Because both `pthread_attr_setstacksize` and `munmap` have the same function
             // signature, we can use `musttail` to let the compiler reuse our stack frame and thus
             // `munmap` will directly return to the caller of `pthread_attr_setstacksize`.
-            LOGD("unmap libzygisk.so loaded at %p with size %zu", start_addr, block_size);
+            LOGV("unmap libzygisk.so loaded at %p with size %zu", start_addr, block_size);
             [[clang::musttail]] return munmap(start_addr, block_size);
         }
         delete g_hook;
@@ -242,7 +242,7 @@ inline void *unwind_get_region_start(_Unwind_Context *ctx) {
 void HookContext::register_hook(dev_t dev, ino_t inode, const char *symbol, void *new_func,
                                 void **old_func) {
     if (!lsplt::RegisterHook(dev, inode, symbol, new_func, old_func)) {
-        LOGE("Failed to register plt_hook \"%s\"\n", symbol);
+        LOGE("failed to register plt_hook \"%s\"\n", symbol);
         return;
     }
     plt_backup.emplace_back(dev, inode, symbol, old_func);
@@ -271,7 +271,7 @@ void HookContext::hook_plt() {
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, strdup);
     PLT_HOOK_REGISTER(android_runtime_dev, android_runtime_inode, property_get);
 
-    if (!lsplt::CommitHook(cached_map_infos)) LOGE("plt_hook failed\n");
+    if (!lsplt::CommitHook(cached_map_infos)) LOGE("HookContext::hook_plt failed");
 
     // Remove unhooked methods
     plt_backup.erase(std::remove_if(plt_backup.begin(), plt_backup.end(),
@@ -294,7 +294,7 @@ void HookContext::hook_unloader() {
 
     PLT_HOOK_REGISTER(art_dev, art_inode, pthread_attr_setstacksize);
     if (!lsplt::CommitHook(cached_map_infos)) {
-        LOGE("plt_hook failed\n");
+        LOGE("HookContext::hook_unloader failed");
     }
 }
 
@@ -302,12 +302,12 @@ void HookContext::restore_plt_hook() {
     // Unhook plt_hook
     for (const auto &[dev, inode, sym, old_func] : plt_backup) {
         if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr)) {
-            LOGE("Failed to register plt_hook [%s]\n", sym);
+            LOGE("failed to register plt_hook [%s]", sym);
             should_unmap = false;
         }
     }
     if (!lsplt::CommitHook(cached_map_infos, true)) {
-        LOGE("Failed to restore plt_hook\n");
+        LOGE("failed to restore plt_hook");
         should_unmap = false;
     }
 }
@@ -366,7 +366,7 @@ void HookContext::hook_zygote_jni() {
             if (!map.path.ends_with("/libnativehelper.so")) continue;
             void *h = dlopen(map.path.data(), RTLD_LAZY);
             if (!h) {
-                LOGW("cannot dlopen libnativehelper.so: %s\n", dlerror());
+                LOGW("cannot dlopen libnativehelper.so: %s", dlerror());
                 break;
             }
             get_created_java_vms =
@@ -375,7 +375,7 @@ void HookContext::hook_zygote_jni() {
             break;
         }
         if (!get_created_java_vms) {
-            LOGW("JNI_GetCreatedJavaVMs not found\n");
+            LOGW("JNI_GetCreatedJavaVMs not found");
             return;
         }
     }

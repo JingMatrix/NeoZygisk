@@ -94,7 +94,7 @@ public:
     /**
      * @brief Dumps the parsed content to logcat for debugging and verification.
      */
-    void dumpToLog() const;
+    void dump(const char* summary) const;
 
 private:
     // --- Private Implementation ---

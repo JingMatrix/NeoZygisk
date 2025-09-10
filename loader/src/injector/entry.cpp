@@ -8,16 +8,15 @@ using namespace std;
 
 extern "C" [[gnu::visibility("default")]]
 void entry(void* addr, size_t size, const char* path) {
-    LOGI("Zygisk library injected, version %s", ZKSU_VERSION);
+    LOGI("zygisk library injected, version %s", ZKSU_VERSION);
 
     zygiskd::Init(path);
 
     if (!zygiskd::PingHeartbeat()) {
-        LOGE("Zygisk daemon is not running");
+        LOGE("zygisk daemon is not running");
         return;
     }
 
-    LOGI("Start hooking");
     hook_entry(addr, size);
     send_seccomp_event_if_needed();
 }
@@ -46,12 +45,12 @@ extern "C" int __cxa_atexit(void (*func)(void*), void* arg, void* dso) {
         const char* library_path = info.dli_fname ? info.dli_fname : "<unknown library>";
         const char* symbol_name = info.dli_sname ? info.dli_sname : "<unknown symbol>";
 
-        LOGD("atexit registration BLOCKED [func, lib, sym, obj, dso]: [%p, %s, %s, %p, %p]", func,
+        LOGV("atexit registration BLOCKED [func, lib, sym, obj, dso]: [%p, %s, %s, %p, %p]", func,
              library_path, symbol_name, arg, dso);
 
     } else {
         // dladdr() failed. We can still log the raw pointer.
-        LOGD("atexit registration BLOCKED for function at %p without library information).", func);
+        LOGV("atexit registration BLOCKED for function at %p without library information).", func);
     }
 
     return 0;

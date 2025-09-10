@@ -13,13 +13,13 @@ void clean_libc_trace() {
     auto g_array = Atexit::findAtexitArray();
     if (g_array != nullptr) {
         g_array->recompact();
-        LOGD("g_array after recompact: %s", g_array->format_state_string().c_str());
+        LOGV("g_array after recompact: %s", g_array->format_state_string().c_str());
     }
 }
 
 void clean_linker_trace(const char *path, size_t loaded_modules, size_t unloaded_modules,
                         bool unload_soinfo) {
-    LOGD("cleaning linker trace for path %s", path);
+    LOGV("cleaning linker trace for path %s", path);
     Linker::dropSoPath(path, unload_soinfo);
 
     if (unload_soinfo) {
@@ -37,7 +37,7 @@ void spoof_virtual_maps(const char *path, bool clear_write_permission) {
         size_t size = map.end - map.start;
 
         if (strstr(map.path.c_str(), path)) {
-            LOGD("spoofing entry path contaning string %s", map.path.c_str());
+            LOGV("spoofing entry path contaning string %s", map.path.c_str());
             // Create an anonymous mapping to hold a copy of the original data
             void *copy = mmap(nullptr, size, PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
             if (copy == MAP_FAILED) {
@@ -65,13 +65,13 @@ void spoof_virtual_maps(const char *path, bool clear_write_permission) {
         if (clear_write_permission && map.path.size() > 0 &&
             (map.perms & (PROT_READ | PROT_WRITE | PROT_EXEC)) ==
                 (PROT_READ | PROT_WRITE | PROT_EXEC)) {
-            LOGD("clearing write permission for entry %s", map.path.c_str());
+            LOGV("clearing write permission for entry %s", map.path.c_str());
             int new_perms = map.perms & ~PROT_WRITE;  // Remove the write permission
             if (mprotect(addr, size, new_perms) == -1) {
-                PLOGE("Failed to remove write permission from %s [%p, %p]", map.path.c_str(), addr,
+                PLOGE("remove write permission from %s [%p, %p]", map.path.c_str(), addr,
                       (void *) map.end);
             } else {
-                LOGD("Successfully removed write permission from %s [%p, %p]", map.path.c_str(),
+                LOGV("write permission removed from %s [%p, %p]", map.path.c_str(),
                      addr, (void *) map.end);
             }
         }
@@ -81,13 +81,13 @@ void spoof_virtual_maps(const char *path, bool clear_write_permission) {
 void spoof_zygote_fossil(char *search_from, char *search_to, const char *anchor) {
     Fossil::MountArgv suspicious_fossil = Fossil::MountArgv::find(search_from, search_to);
     if (!suspicious_fossil.isValid()) {
-        LOGD("no valid fossil found on the stack");
+        LOGV("no valid fossil found on the stack");
         return;
     }
-    suspicious_fossil.dumpToLog();
+    suspicious_fossil.dump("current fossil");
 
     if (suspicious_fossil.getTarget().find(anchor) != std::string::npos) {
-        LOGD("stack fossil appears to be the legitimate 'ref_profiles' entry");
+        LOGV("stack fossil appears to be the legitimate 'ref_profiles' entry");
         return;
     }
 
@@ -101,16 +101,15 @@ void spoof_zygote_fossil(char *search_from, char *search_to, const char *anchor)
         }
     }
     if (!clean_template_opt) {
-        LOGD("no suspicious mount was found in mountinfo to identify a template");
+        LOGV("no suspicious mount was found in mountinfo to identify a template");
         return;
     }
     const Fossil::MountInfoEntry &clean_entry = *clean_template_opt;
-    LOGD("using preceding entry as the clean spoof template: '%s'", clean_entry.target.c_str());
+    LOGV("using preceding entry as the clean spoof template: '%s'", clean_entry.target.c_str());
 
     Fossil::MountArgv clean_fossil_to_write(clean_entry, suspicious_fossil.getStartAddress(),
                                             suspicious_fossil.getBaseFlags());
-    LOGD("created a clean fossil object to write:");
-    clean_fossil_to_write.dumpToLog();
+    clean_fossil_to_write.dump("spoofed fossil");
 
     suspicious_fossil.cleanMemory();
     clean_fossil_to_write.writeToMemory();

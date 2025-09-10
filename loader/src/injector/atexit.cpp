@@ -7,7 +7,7 @@ namespace Atexit {
 
 void AtexitArray::recompact() {
     if (!needs_recompaction()) {
-        LOGD("needs_recompaction returns false");
+        LOGV("needs_recompaction returns false");
     }
 
     set_writable(true, 0, size_);
@@ -53,14 +53,14 @@ void AtexitArray::set_writable(bool writable, size_t start_idx, size_t num_entri
 
     const int prot = PROT_READ | (writable ? PROT_WRITE : 0);
     if (mprotect(reinterpret_cast<char *>(array_) + start_byte, byte_len, prot) != 0) {
-        PLOGE("mprotect failed on atexit array: %m");
+        PLOGE("mprotect on atexit array");
     }
 }
 
 AtexitArray *findAtexitArray() {
     ElfParser::ElfImage libc("libc.so");
     if (!libc.isValid()) {
-        LOGE("Failed to load libc.so for atexit parsing.");
+        PLOGE("load libc.so");
         return nullptr;
     }
 
@@ -72,18 +72,18 @@ AtexitArray *findAtexitArray() {
     // which is the start of the effective AtexitArray struct in memory.
     auto p_array_start = ElfParser::findDirectSymbol<void *>(libc, "_ZL7g_array.0");
     if (p_array_start != nullptr) {
-        LOGD("Found modern atexit symbol '_ZL7g_array.0' at %p", p_array_start);
+        LOGV("found modern atexit symbol '_ZL7g_array.0' at %p", p_array_start);
         g_array = reinterpret_cast<AtexitArray *>(p_array_start);
     } else {
         // --- Fallback Method: Legacy, monolithic symbol ---
         // On older systems, the entire AtexitArray struct was exported under a single symbol name.
-        LOGD("Modern atexit symbol not found, trying legacy '_ZL7g_array'");
+        LOGV("modern atexit symbol not found, trying legacy '_ZL7g_array'");
         g_array = ElfParser::findDirectSymbol<AtexitArray>(libc, "_ZL7g_array");
     }
 
     // --- Validation ---
     if (g_array == nullptr) {
-        LOGE("Failed to find any 'g_array' symbol for atexit in libc.so");
+        LOGE("failed to find any 'g_array' symbol for atexit in libc.so");
         return nullptr;
     }
 
@@ -91,11 +91,10 @@ AtexitArray *findAtexitArray() {
     // garbage memory. An abnormally large size is a strong indicator of an error.
     constexpr size_t MAX_REASONABLE_ATEXIT_ENTRIES = 4096 * 16;
     if (g_array->size() < MAX_REASONABLE_ATEXIT_ENTRIES) {
-        LOGD("Successfully validated atexit array at %p with size: %zu", g_array, g_array->size());
+        LOGV("successfully validated atexit array at %p with size: %zu", g_array, g_array->size());
     } else {
-        LOGE(
-            "Found atexit array symbol at %p, but its size (%zu) is unreasonably large. Assuming invalid.",
-            g_array, g_array->size());
+        LOGE("found atexit array symbol at %p, but its size (%zu) is unreasonably large", g_array,
+             g_array->size());
         return nullptr;
     }
 

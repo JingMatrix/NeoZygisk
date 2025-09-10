@@ -29,7 +29,7 @@ int Connect(uint8_t retry) {
         int r = connect(fd, reinterpret_cast<struct sockaddr *>(&addr), socklen);
         if (r == 0) return fd;
         if (retry) {
-            PLOGE("Retrying to connect to zygiskd, sleep 1s");
+            LOGW("retrying to connect to zygiskd, sleep 1s");
             sleep(1);
         }
     }
@@ -41,7 +41,7 @@ int Connect(uint8_t retry) {
 bool PingHeartbeat() {
     UniqueFd fd = Connect(5);
     if (fd == -1) {
-        PLOGE("Connect to zygiskd");
+        PLOGE("connecting to zygiskd");
         return false;
     }
     socket_utils::write_u8(fd, (uint8_t) SocketAction::PingHeartbeat);
@@ -132,24 +132,24 @@ void ZygoteRestart() {
     UniqueFd fd = Connect(1);
     if (fd == -1) {
         if (errno == ENOENT) {
-            LOGD("Could not notify ZygoteRestart (maybe it hasn't been created)");
+            LOGD("could not notify ZygoteRestart (maybe it hasn't been created)");
         } else {
-            PLOGE("Could not notify ZygoteRestart");
+            PLOGE("notify ZygoteRestart");
         }
         return;
     }
     if (!socket_utils::write_u8(fd, (uint8_t) SocketAction::ZygoteRestart)) {
-        PLOGE("Failed to request ZygoteRestart");
+        PLOGE("request ZygoteRestart");
     }
 }
 
 void SystemServerStarted() {
     UniqueFd fd = Connect(1);
     if (fd == -1) {
-        PLOGE("Failed to report system server started");
+        PLOGE("report system server started");
     } else {
         if (!socket_utils::write_u8(fd, (uint8_t) SocketAction::SystemServerStarted)) {
-            PLOGE("Failed to report system server started");
+            PLOGE("report system server started");
         }
     }
 }

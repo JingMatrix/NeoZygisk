@@ -542,8 +542,7 @@ void wait_for_trace(int pid, int *status, int flags) {
 
         // If the process terminated or signaled instead of stopping, it's an error.
         if (!WIFSTOPPED(*status)) {
-            LOGE("Process %d did not stop as expected: %s. Exiting.", pid,
-                 parse_status(*status).c_str());
+            LOGE("process %d did not stop as expected: %s", pid, parse_status(*status).c_str());
             exit(1);
         }
 
