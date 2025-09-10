@@ -1,31 +1,34 @@
+// src/root_impl/apatch.rs
+
+//! Detection and interaction logic for the APatch root solution.
+
+use crate::constants::MIN_APATCH_VERSION;
+use anyhow::{Context, Result};
+use log::debug;
 use std::{
     fs::File,
     io::{BufRead, BufReader},
     process::{Command, Stdio},
 };
 
-use log::debug;
-
-use crate::constants::MIN_APATCH_VERSION;
-
 const CONFIG_FILE: &str = "/data/adb/ap/package_config";
 
+/// Represents the detected version status of APatch.
 pub enum Version {
     Supported,
     TooOld,
 }
 
-#[allow(dead_code)]
+/// Represents a single entry in the APatch configuration file.
+#[derive(Debug)]
 struct PackageInfo {
-    pkg: String,
-    exclude: bool,
-    allow: bool,
     uid: i32,
-    to_uid: i32,
-    sctx: String,
+    exclude: bool, // Corresponds to denylist
+    allow: bool,   // Corresponds to root access
 }
 
-pub fn get_apatch() -> Option<Version> {
+/// Detects if APatch is installed and if its version is supported.
+pub fn detect_version() -> Option<Version> {
     Command::new("apd")
         .arg("-V")
         .stdout(Stdio::piped())
@@ -33,14 +36,7 @@ pub fn get_apatch() -> Option<Version> {
         .ok()
         .and_then(|child| child.wait_with_output().ok())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|output| {
-            let parts: Vec<&str> = output.split_whitespace().collect();
-            if parts.len() != 2 {
-                None
-            } else {
-                parts[1].parse::<i32>().ok()
-            }
-        })
+        .and_then(|version_str| version_str.split_whitespace().nth(1)?.parse::<i32>().ok())
         .map(|version| {
             if version >= MIN_APATCH_VERSION {
                 Version::Supported
@@ -50,99 +46,60 @@ pub fn get_apatch() -> Option<Version> {
         })
 }
 
-fn parse_config_file(filename: &str) -> Result<Vec<PackageInfo>, String> {
-    let file = File::open(filename).map_err(|e| format!("Failed to open file: {}", e))?;
+/// Parses the APatch package configuration file.
+fn parse_config_file() -> Result<Vec<PackageInfo>> {
+    let file = File::open(CONFIG_FILE).context("Failed to open APatch config file")?;
     let mut reader = BufReader::new(file);
-
-    // Skip the header row
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|e| format!("Failed to read header: {}", e))?;
+
+    // Skip the header row.
+    reader.read_line(&mut line)?;
     line.clear();
 
     let mut result = Vec::new();
-    while let Ok(bytes_read) = reader.read_line(&mut line) {
-        if bytes_read == 0 {
-            break; // Reached end of file
-        }
-
-        let mut parts = line.trim().split(',');
-        match (
-            parts.next(),
-            parts.next(),
-            parts.next(),
-            parts.next(),
-            parts.next(),
-            parts.next(),
-        ) {
-            (
-                Some(pkg),
-                Some(exclude),
-                Some(allow),
-                Some(uid_str),
-                Some(to_uid_str),
-                Some(sctx),
-            ) => {
-                let uid = uid_str
-                    .parse::<i32>()
-                    .map_err(|e| format!("Invalid field uid {uid_str}: {}", e))?;
-                let to_uid = to_uid_str
-                    .parse::<i32>()
-                    .map_err(|e| format!("Invalid field to_uid {to_uid_str}: {}", e))?;
+    while reader.read_line(&mut line)? > 0 {
+        let parts: Vec<&str> = line.trim().split(',').collect();
+        if parts.len() >= 6 {
+            if let (Ok(exclude), Ok(allow), Ok(uid)) = (
+                parts[1].parse::<u8>(),
+                parts[2].parse::<u8>(),
+                parts[3].parse::<i32>(),
+            ) {
                 result.push(PackageInfo {
-                    pkg: pkg.to_string(),
-                    exclude: exclude == "1",
-                    allow: allow == "1",
                     uid,
-                    to_uid,
-                    sctx: sctx.to_string(),
+                    exclude: exclude == 1,
+                    allow: allow == 1,
                 });
-            }
-            _ => {
-                return Err(format!("Invalid line format: {}", line));
             }
         }
         line.clear();
     }
-
     Ok(result)
 }
 
+/// Checks if a UID is configured to have root access in APatch.
 pub fn uid_granted_root(uid: i32) -> bool {
-    match parse_config_file(CONFIG_FILE) {
-        Ok(packages) => {
-            for pkg in packages {
-                if pkg.uid == uid {
-                    return pkg.allow;
-                }
-            }
-            false
-        }
-        Err(msg) => {
-            debug!("Failed to parse config file: {msg}");
+    match parse_config_file() {
+        Ok(packages) => packages.iter().any(|pkg| pkg.uid == uid && pkg.allow),
+        Err(e) => {
+            debug!("Could not check APatch root grant status: {}", e);
             false
         }
     }
 }
 
+/// Checks if a UID is on the denylist in APatch.
 pub fn uid_should_umount(uid: i32) -> bool {
-    match parse_config_file(CONFIG_FILE) {
-        Ok(packages) => {
-            for pkg in packages {
-                if pkg.uid == uid {
-                    return pkg.exclude;
-                }
-            }
-            false
-        }
-        Err(msg) => {
-            debug!("Failed to parse config file: {msg}");
+    match parse_config_file() {
+        Ok(packages) => packages.iter().any(|pkg| pkg.uid == uid && pkg.exclude),
+        Err(e) => {
+            debug!("Could not check APatch denylist status: {}", e);
             false
         }
     }
 }
 
+/// Checks if a UID belongs to the APatch manager app.
 pub fn uid_is_manager(uid: i32) -> bool {
     if let Ok(s) = rustix::fs::stat("/data/user_de/0/me.bmax.apatch") {
         return s.st_uid == uid as u32;
