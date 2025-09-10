@@ -9,9 +9,8 @@
 
 #include <lsplt.hpp>
 
-#include "art_method.hpp"
+#include "android_util.hpp"
 #include "daemon.hpp"
-#include "jni_helper.hpp"
 #include "module.hpp"
 #include "zygisk.hpp"
 
@@ -341,16 +340,16 @@ void HookContext::hook_jni_methods(JNIEnv *env, const char *clz, JNIMethods meth
             native_method.fnPtr = nullptr;
             continue;
         }
-        auto method = lsplant::JNI_ToReflectedMethod(env, clazz, method_id, is_static);
-        auto modifier = lsplant::JNI_CallIntMethod(env, method, member_getModifiers);
+        auto method = util::jni::ToReflectedMethod(env, clazz, method_id, is_static);
+        auto modifier = util::jni::CallIntMethod(env, method, member_getModifiers);
         if ((modifier & MODIFIER_NATIVE) == 0) {
             native_method.fnPtr = nullptr;
             continue;
         }
-        auto artMethod = lsplant::art::ArtMethod::FromReflectedMethod(env, method);
+        auto artMethod = util::art::ArtMethod::FromReflectedMethod(env, method);
         hooks.push_back(native_method);
         auto original_method = artMethod->GetData();
-        LOGV("replaced %s %s orig %p", clz, native_method.name, original_method);
+        LOGV("replaced %s!%s @%p", clz, native_method.name, original_method);
         native_method.fnPtr = original_method;
     }
 
@@ -387,17 +386,17 @@ void HookContext::hook_zygote_jni() {
     res = vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
     if (res != JNI_OK || env == nullptr) return;
 
-    auto classMember = lsplant::JNI_FindClass(env, "java/lang/reflect/Member");
+    auto classMember = util::jni::FindClass(env, "java/lang/reflect/Member");
     if (classMember != nullptr)
-        member_getModifiers = lsplant::JNI_GetMethodID(env, classMember, "getModifiers", "()I");
-    auto classModifier = lsplant::JNI_FindClass(env, "java/lang/reflect/Modifier");
+        member_getModifiers = util::jni::GetMethodID(env, classMember, "getModifiers", "()I");
+    auto classModifier = util::jni::FindClass(env, "java/lang/reflect/Modifier");
     if (classModifier != nullptr) {
-        auto fieldId = lsplant::JNI_GetStaticFieldID(env, classModifier, "NATIVE", "I");
+        auto fieldId = util::jni::GetStaticFieldID(env, classModifier, "NATIVE", "I");
         if (fieldId != nullptr)
-            MODIFIER_NATIVE = lsplant::JNI_GetStaticIntField(env, classModifier, fieldId);
+            MODIFIER_NATIVE = util::jni::GetStaticIntField(env, classModifier, fieldId);
     }
     if (member_getModifiers == nullptr || MODIFIER_NATIVE == 0) return;
-    if (!lsplant::art::ArtMethod::Init(env)) {
+    if (!util::art::ArtMethod::Init(env)) {
         LOGE("failed to init ArtMethod");
         return;
     }
