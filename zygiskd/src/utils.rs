@@ -1,42 +1,51 @@
+// src/utils.rs
+
+//! A collection of utility functions for platform-specific operations.
+//!
+//! This module provides helpers for:
+//! - Interacting with Android properties and SELinux contexts.
+//! - Managing and caching Linux mount namespaces.
+//! - Low-level Unix socket and pipe I/O.
+//! - A trait (`UnixStreamExt`) for simplified socket communication.
+
+use crate::{constants::MountNamespace, root_impl};
 use anyhow::{Result, bail};
 use log::{debug, error, trace};
 use procfs::process::{MountInfo, Process};
 use rustix::net::{
-    AddressFamily, SendFlags, SocketAddrUnix, SocketType, bind_unix, connect_unix, listen,
-    sendto_unix, socket,
+    AddressFamily, SendFlags, SocketAddrUnix, SocketType, bind, connect, listen, sendto, socket,
 };
-use rustix::path::Arg;
-use rustix::thread::gettid;
-use std::ffi::{CStr, CString, c_char, c_void};
+use rustix::thread as rustix_thread;
+use std::ffi::{CString, c_char};
 use std::io::Error;
-use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::net::UnixListener;
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::net::UnixStream,
 };
 
-use crate::constants::MountNamespace;
-use crate::root_impl;
+// --- Platform-specific Macros ---
 
+/// Selects an expression based on the target pointer width (32-bit vs 64-bit).
 #[cfg(target_pointer_width = "64")]
 #[macro_export]
-macro_rules! lp_select {
-    ($lp32:expr, $lp64:expr) => {
-        $lp64
+macro_rules! arch_select {
+    ($arch32:expr, $arch64:expr) => {
+        $arch64
     };
 }
 #[cfg(target_pointer_width = "32")]
 #[macro_export]
-macro_rules! lp_select {
-    ($lp32:expr, $lp64:expr) => {
-        $lp32
+macro_rules! arch_select {
+    ($arch32:expr, $arch64:expr) => {
+        $arch32
     };
 }
 
+/// Selects an expression based on the build profile (debug vs release).
 #[cfg(debug_assertions)]
 #[macro_export]
 macro_rules! debug_select {
@@ -52,180 +61,182 @@ macro_rules! debug_select {
     };
 }
 
-pub struct LateInit<T> {
-    cell: OnceLock<T>,
-}
+// --- SELinux and Android Property Utilities ---
 
-impl<T> LateInit<T> {
-    pub const fn new() -> Self {
-        LateInit {
-            cell: OnceLock::new(),
-        }
-    }
-
-    pub fn init(&self, value: T) {
-        assert!(self.cell.set(value).is_ok())
-    }
-
-    pub fn initiated(&self) -> bool {
-        self.cell.get().is_some()
-    }
-}
-
-impl<T> std::ops::Deref for LateInit<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        self.cell.get().unwrap()
-    }
-}
-
+/// Sets the SELinux context for socket creation for the current thread.
 pub fn set_socket_create_context(context: &str) -> Result<()> {
+    // Try the modern path first.
     let path = "/proc/thread-self/attr/sockcreate";
-    match fs::write(path, context) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            let path = format!(
-                "/proc/self/task/{}/attr/sockcreate",
-                gettid().as_raw_nonzero()
-            );
-            fs::write(path, context)?;
-            Ok(())
-        }
+    if fs::write(path, context).is_ok() {
+        return Ok(());
     }
+    // Fallback for older kernels.
+    let fallback_path = format!(
+        "/proc/self/task/{}/attr/sockcreate",
+        rustix_thread::gettid().as_raw_nonzero()
+    );
+    fs::write(fallback_path, context)?;
+    Ok(())
 }
 
+/// Gets the current SELinux context of the process.
 pub fn get_current_attr() -> Result<String> {
-    let s = fs::read("/proc/self/attr/current")?;
-    Ok(s.to_string_lossy().to_string())
+    let s = fs::read_to_string("/proc/self/attr/current")?;
+    Ok(s.trim().to_string())
 }
 
+/// Changes the SELinux context of a file using the `chcon` command.
 pub fn chcon(path: &str, context: &str) -> Result<()> {
     Command::new("chcon").arg(context).arg(path).status()?;
     Ok(())
 }
 
+/// Retrieves an Android system property value.
 pub fn get_property(name: &str) -> Result<String> {
     let name = CString::new(name)?;
-    let mut buf = vec![0u8; 92];
-    let prop = unsafe {
-        __system_property_get(name.as_ptr(), buf.as_mut_ptr() as *mut c_char);
-        CStr::from_bytes_until_nul(&buf)?
-    };
-    Ok(prop.to_string_lossy().to_string())
+    let mut buf = vec![0u8; 92]; // PROP_VALUE_MAX
+    let len = unsafe { __system_property_get(name.as_ptr(), buf.as_mut_ptr() as *mut c_char) };
+    if len > 0 {
+        Ok(String::from_utf8_lossy(&buf[..len as usize]).to_string())
+    } else {
+        Ok(String::new())
+    }
 }
 
+// --- Mount Namespace Management ---
+
+/// Switches the current thread into the mount namespace of a given process.
 pub fn switch_mount_namespace(pid: i32) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let mnt = fs::File::open(format!("/proc/{}/ns/mnt", pid))?;
-    rustix::thread::move_into_link_name_space(mnt.as_fd(), None)?;
+    let mnt_ns_file = fs::File::open(format!("/proc/{}/ns/mnt", pid))?;
+    rustix_thread::move_into_link_name_space(
+        mnt_ns_file.as_fd(),
+        Some(rustix_thread::LinkNameSpaceType::Mount),
+    )?;
+    // `setns` can change the current working directory, so we restore it.
     std::env::set_current_dir(cwd)?;
     Ok(())
 }
 
-// save mount namespaces for all application process
-static CLEAN_MNT_NS_FD: LateInit<i32> = LateInit::new();
-static ROOT_MNT_NS_FD: LateInit<i32> = LateInit::new();
+/// File descriptors that hold open references to the clean and root mount namespaces,
+/// preventing them from being destroyed even if all processes within them terminate.
+static CLEAN_MNT_NS_FD: OnceLock<OwnedFd> = OnceLock::new();
+static ROOT_MNT_NS_FD: OnceLock<OwnedFd> = OnceLock::new();
 
-// Use `man 7 namespaces` to read the Linux manual about namespaces.
-// In the section `The /proc/pid/ns/ directory`, it is explained that:
-// opening one of the files in this directory (or a file that is bind
-// mounted to one of these files) returns a file handle for the corresponding
-// namespace of the process specified by pid. As long as this file descriptor
-// remains open, the namespace will remain alive, even if all processes in the
-// namespace terminate.
+/// Saves a handle to a specific mount namespace (`Clean` or `Root`) so it can be entered later.
+///
+/// This is a complex operation required to prepare an environment for Zygisk modules.
+///
+/// # Arguments
+/// * `pid` - The PID of a process in the target mount namespace (e.g., Zygote's PID).
+///           If -1, this function assumes the namespace has already been cached and just returns the FD.
+/// * `namespace_type` - The type of namespace to cache.
+///
+/// # Mechanism
+/// 1. A child process is forked.
+/// 2. The child switches into the target process's mount namespace.
+/// 3. If a `Clean` namespace is requested, the child performs an additional `unshare(CLONE_NEWNS)`
+///    and then unmounts all Magisk/KernelSU/APatch-related filesystems to create a "clean" state.
+/// 4. The parent process waits for the child to finish setting up the namespace. A pipe is used
+///    for synchronization.
+/// 5. The parent then opens `/proc/<child_pid>/ns/mnt`, which gives it a file descriptor
+///    to the child's newly prepared namespace.
+/// 6. This file descriptor is stored in one of the static `OnceLock` variables, keeping the
+///    namespace alive indefinitely.
 pub fn save_mount_namespace(pid: i32, namespace_type: MountNamespace) -> Result<i32> {
-    // We shall use CLEAN_MNT_NS_FD and ROOT_MNT_NS_FD to keep the namespace file handle.
-    let is_initialized = match namespace_type {
-        MountNamespace::Clean => CLEAN_MNT_NS_FD.initiated(),
-        MountNamespace::Root => ROOT_MNT_NS_FD.initiated(),
+    let ns_fd_cell = match namespace_type {
+        MountNamespace::Clean => &CLEAN_MNT_NS_FD,
+        MountNamespace::Root => &ROOT_MNT_NS_FD,
     };
 
-    if !is_initialized {
-        if pid == -1 {
-            bail!(
-                "Caching not finished [Clean, Root]: [{}, {}]",
-                CLEAN_MNT_NS_FD.initiated(),
-                ROOT_MNT_NS_FD.initiated(),
-            );
-        }
-        // Use a pipe to keep the forked child process open
-        // till the namespace is read.
-
-        let mut pipes = [0; 2];
-        unsafe {
-            libc::pipe(pipes.as_mut_ptr());
-        }
-        let (reader, writer) = (pipes[0], pipes[1]);
-        match unsafe { libc::fork() } {
-            0 => {
-                // Child process
-                switch_mount_namespace(pid)?;
-                if namespace_type != MountNamespace::Root {
-                    unsafe {
-                        libc::unshare(libc::CLONE_NEWNS);
-                    }
-                    revert_unmount()?;
-                }
-                let mut mypid = 0;
-                while mypid != unsafe { libc::getpid() } {
-                    write_int(writer, 0)?;
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    mypid = read_int(reader)?;
-                }
-                std::process::exit(0);
-            }
-            child if child > 0 => {
-                // Parent process
-                trace!("waiting {child} to cache mount namespace");
-                if read_int(reader)? == 0 {
-                    trace!("{child} finished caching mount namespace");
-                }
-                let ns_path = format!("/proc/{}/ns/mnt", child);
-                let ns_file = fs::OpenOptions::new().read(true).open(&ns_path)?;
-                write_int(writer, child)?;
-                unsafe {
-                    if libc::close(reader) == -1
-                        || libc::close(writer) == -1
-                        || libc::waitpid(child, std::ptr::null_mut(), 0) == -1
-                    {
-                        bail!(Error::last_os_error());
-                    }
-                };
-                match namespace_type {
-                    MountNamespace::Clean => {
-                        CLEAN_MNT_NS_FD.init(ns_file.as_raw_fd());
-                        trace!("CLEAN_MNT_NS_FD updated to {}", *CLEAN_MNT_NS_FD);
-                    }
-                    MountNamespace::Root => {
-                        ROOT_MNT_NS_FD.init(ns_file.as_raw_fd());
-                        trace!("ROOT_MNT_NS_FD updated to {}", *ROOT_MNT_NS_FD);
-                    }
-                };
-                std::mem::forget(ns_file);
-            }
-            _ => bail!(Error::last_os_error()),
-        }
+    if let Some(fd) = ns_fd_cell.get() {
+        return Ok(fd.as_raw_fd());
     }
-    match namespace_type {
-        MountNamespace::Clean if CLEAN_MNT_NS_FD.initiated() => Ok(*CLEAN_MNT_NS_FD),
-        MountNamespace::Root if ROOT_MNT_NS_FD.initiated() => Ok(*ROOT_MNT_NS_FD),
-        _ => Ok(0),
+
+    if pid == -1 {
+        bail!(
+            "Mount namespace of type {:?} requested but not yet cached.",
+            namespace_type
+        );
+    }
+
+    // Create a pipe for synchronization between parent and child.
+    let (pipe_reader, pipe_writer) = rustix::pipe::pipe()?;
+
+    match unsafe { libc::fork() } {
+        0 => {
+            // --- Child Process ---
+            // Close the side of the pipe we don't use.
+            drop(pipe_reader);
+            // Switch into the target process's namespace.
+            switch_mount_namespace(pid).unwrap();
+
+            if namespace_type == MountNamespace::Clean {
+                // Create a new, private mount namespace for ourselves.
+                unsafe {
+                    rustix_thread::unshare_unsafe(rustix_thread::UnshareFlags::NEWNS).unwrap();
+                }
+                // Clean up module mounts.
+                revert_unmount().unwrap();
+            }
+
+            // Signal to the parent that setup is complete.
+            let sig: [u8; 1] = [0];
+            rustix::io::write(pipe_writer, &sig).unwrap();
+
+            // Wait indefinitely. The parent will kill us after it has the FD.
+            // A simple sleep loop is fine here.
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        }
+        child_pid if child_pid > 0 => {
+            // --- Parent Process ---
+            drop(pipe_writer);
+
+            // Wait for the signal from the child.
+            let mut buf: [u8; 1] = [0];
+            rustix::io::read(pipe_reader, &mut buf)?;
+            trace!("Child {} finished setting up mount namespace.", child_pid);
+
+            let ns_path = format!("/proc/{}/ns/mnt", child_pid);
+            let ns_file = fs::File::open(&ns_path)?;
+
+            // We have the FD, we can now terminate the child process.
+            unsafe { libc::kill(child_pid, libc::SIGKILL) };
+            unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
+
+            let raw_fd = ns_file.as_raw_fd();
+            ns_fd_cell
+                .set(ns_file.into())
+                .map_err(|_| anyhow::anyhow!("Failed to set OnceLock for namespace FD"))?;
+
+            match namespace_type {
+                MountNamespace::Clean => trace!("CLEAN_MNT_NS_FD cached as {}", raw_fd),
+                MountNamespace::Root => trace!("ROOT_MNT_NS_FD cached as {}", raw_fd),
+            }
+
+            Ok(raw_fd)
+        }
+        _ => bail!(Error::last_os_error()),
     }
 }
 
+/// Unmounts filesystems related to root solutions (Magisk, APatch, KernelSU)
+/// from the current mount namespace.
 fn revert_unmount() -> Result<()> {
     let mount_infos = Process::myself()?.mountinfo()?;
-    let mut traces: Vec<MountInfo> = Vec::new();
+    let mut unmount_targets: Vec<MountInfo> = Vec::new();
 
-    let root_source = match root_impl::get_impl() {
-        root_impl::RootImpl::APatch => "APatch",
-        root_impl::RootImpl::KernelSU => "KSU",
-        root_impl::RootImpl::Magisk => "magisk",
-        _ => panic!("wrong root impl: {:?}", root_impl::get_impl()),
+    let root_source = match root_impl::get() {
+        root_impl::RootImpl::APatch => Some("APatch"),
+        root_impl::RootImpl::KernelSU => Some("KSU"),
+        root_impl::RootImpl::Magisk => Some("magisk"),
+        _ => None,
     };
 
-    let module_source: Option<String> =
-        if matches!(root_impl::get_impl(), root_impl::RootImpl::KernelSU) {
+    let ksu_module_source: Option<String> =
+        if matches!(root_impl::get(), root_impl::RootImpl::KernelSU) {
             mount_infos
                 .iter()
                 .find(|info| info.mount_point.as_path().to_str() == Some("/data/adb/modules"))
@@ -236,64 +247,38 @@ fn revert_unmount() -> Result<()> {
         };
 
     for info in mount_infos {
-        let path = info.mount_point.to_str().unwrap_or("").to_string();
-        let should_unmount = info.root.starts_with("/adb/modules")
-            || path.starts_with("/data/adb/modules")
-            || info.mount_source.as_deref() == Some(root_source)
-            || (module_source.is_some() && info.mount_source == module_source);
+        let path_str = info.mount_point.to_str().unwrap_or("");
+        let mount_source_str = info.mount_source.as_deref();
+
+        let should_unmount = path_str.starts_with("/data/adb/modules")
+            || (root_source.is_some() && mount_source_str == root_source)
+            || (ksu_module_source.is_some() && info.mount_source == ksu_module_source);
 
         if should_unmount {
-            traces.push(info);
+            unmount_targets.push(info);
         }
     }
 
-    traces.sort_by(|a, b| b.mnt_id.cmp(&a.mnt_id));
+    // Unmount in reverse order of mnt_id to handle nested mounts correctly.
+    unmount_targets.sort_by_key(|a| std::cmp::Reverse(a.mnt_id));
 
-    for trace in traces {
-        let path = trace.mount_point.to_str().unwrap_or("").to_string();
-        debug!("Unmounting {} (mnt_id: {})", path, trace.mnt_id);
-        unsafe {
-            if libc::umount2(CString::new(path.clone())?.as_ptr(), libc::MNT_DETACH) == -1 {
-                error!("failed to to unmount {}", path);
-                bail!(std::io::Error::last_os_error());
-            } else {
-                debug!("Unmounted {}", path);
+    for target in unmount_targets {
+        let path = target.mount_point.to_str().unwrap_or("");
+        debug!("Unmounting {} (mnt_id: {})", path, target.mnt_id);
+        if let Ok(path_cstr) = CString::new(path.to_string()) {
+            unsafe {
+                if libc::umount2(path_cstr.as_ptr(), libc::MNT_DETACH) == -1 {
+                    error!("Failed to unmount {}: {}", path, Error::last_os_error());
+                }
             }
         }
     }
     Ok(())
 }
 
-fn write_int(fd: libc::c_int, value: i32) -> Result<()> {
-    unsafe {
-        if libc::write(
-            fd,
-            &value as *const _ as *const c_void,
-            std::mem::size_of::<i32>(),
-        ) == -1
-        {
-            bail!(Error::last_os_error());
-        }
-    };
-    Ok(())
-}
+// --- Unix Socket and IPC Extensions ---
 
-fn read_int(fd: libc::c_int) -> Result<i32> {
-    let mut buf = [0u8; 4];
-    unsafe {
-        if libc::read(
-            fd,
-            buf.as_mut_ptr() as *mut c_void,
-            std::mem::size_of::<i32>(),
-        ) == -1
-        {
-            bail!(Error::last_os_error());
-        }
-    };
-    let value = i32::from_le_bytes(buf);
-    Ok(value)
-}
-
+/// An extension trait for `UnixStream` to simplify reading and writing common data types.
 pub trait UnixStreamExt {
     fn read_u8(&mut self) -> Result<u8>;
     fn read_u32(&mut self) -> Result<u32>;
@@ -332,7 +317,7 @@ impl UnixStreamExt for UnixStream {
     }
 
     fn write_u8(&mut self, value: u8) -> Result<()> {
-        self.write_all(&value.to_ne_bytes())?;
+        self.write_all(&[value])?;
         Ok(())
     }
 
@@ -353,53 +338,47 @@ impl UnixStreamExt for UnixStream {
     }
 }
 
+/// Creates a `UnixListener` bound to a given path, handling file cleanup and SELinux contexts.
 pub fn unix_listener_from_path(path: &str) -> Result<UnixListener> {
     let _ = fs::remove_file(path);
     let addr = SocketAddrUnix::new(path)?;
     let socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
-    bind_unix(&socket, &addr)?;
-    listen(&socket, 2)?;
+    bind(&socket, &addr)?;
+    listen(&socket, 10)?; // Backlog of 10
     chcon(path, "u:object_r:zygisk_file:s0")?;
     Ok(UnixListener::from(socket))
 }
 
+/// Sends a datagram packet to a Unix socket path.
 pub fn unix_datagram_sendto(path: &str, buf: &[u8]) -> Result<()> {
-    // FIXME: shall we set create context every time?
-    set_socket_create_context(get_current_attr()?.as_str())?;
+    set_socket_create_context(&get_current_attr()?)?;
     let addr = SocketAddrUnix::new(path.as_bytes())?;
     let socket = socket(AddressFamily::UNIX, SocketType::DGRAM, None)?;
-    connect_unix(&socket, &addr)?;
-    sendto_unix(socket, buf, SendFlags::empty(), &addr)?;
+    connect(&socket, &addr)?;
+    sendto(socket, buf, SendFlags::empty(), &addr)?;
     set_socket_create_context("u:r:zygote:s0")?;
     Ok(())
 }
 
-pub fn check_unix_socket(stream: &UnixStream, block: bool) -> bool {
-    unsafe {
-        let mut pfd = libc::pollfd {
-            fd: stream.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let timeout = if block { -1 } else { 0 };
-        libc::poll(&mut pfd, 1, timeout);
-        if pfd.revents & !libc::POLLIN != 0 {
-            return false;
-        }
+/// Checks if a Unix socket is still alive and connected using `poll`.
+pub fn is_socket_alive(stream: &UnixStream) -> bool {
+    let pfd = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let mut pfds = [pfd];
+    // A timeout of 0 makes poll return immediately.
+    let ret = unsafe { libc::poll(pfds.as_mut_ptr(), 1, 0) };
+    if ret < 0 {
+        return false;
     }
-    return true;
+    // If `revents` has any flag other than POLLIN (e.g., POLLHUP, POLLERR), the socket is dead.
+    pfds[0].revents & !libc::POLLIN == 0
 }
 
+// --- FFI for Android System APIs ---
 unsafe extern "C" {
-    fn __android_log_print(prio: i32, tag: *const c_char, fmt: *const c_char, ...) -> i32;
     fn __system_property_get(name: *const c_char, value: *mut c_char) -> u32;
-    fn __system_property_set(name: *const c_char, value: *const c_char) -> u32;
-    fn __system_property_find(name: *const c_char) -> *const c_void;
-    fn __system_property_wait(
-        info: *const c_void,
-        old_serial: u32,
-        new_serial: *mut u32,
-        timeout: *const libc::timespec,
-    ) -> bool;
-    fn __system_property_serial(info: *const c_void) -> u32;
+    // Other __system_property functions could be declared here if needed.
 }

@@ -1,24 +1,24 @@
 [package]
 name = "zygiskd"
-authors = ["JingMatrix", "Nullptr"]
-version = "1.0.0"
+authors = ["JingMatrix"]
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.85"
 
 [dependencies]
-android_logger = "0.14"
+android_logger = "0.15"
 anyhow = { version = "1.0", features = ["backtrace"] }
-bitflags = { version = "2.6" }
+bitflags = { version = "2.9" }
 konst = "0.3"
 libc = "0.2"
 log = "0.4"
 memfd = "0.6"
 num_enum = "0.7"
 passfd = "0.1"
-procfs = "0.17"
-proc-maps = "0.3"
+procfs = "0.18"
+proc-maps = "0.4"
 
-rustix = { version = "0.38", features = [ "fs", "net", "thread" ] }
+rustix = { git = "https://github.com/JingMatrix/rustix", branch = "main", features = [ "fs", "net", "pipe", "thread" ] }
 
 [profile.dev]
 strip = false
@@ -30,3 +30,6 @@ debug = true
 panic = "abort"
 opt-level = "z"
 lto = true
+
+[patch.crates-io]
+rustix = { git = "https://github.com/JingMatrix/rustix", branch = "main" }

@@ -1,124 +1,125 @@
-use std::fs;
-use std::os::android::fs::MetadataExt;
-use crate::constants::MIN_MAGISK_VERSION;
-use std::process::{Command, Stdio};
-use log::info;
-use crate::utils::LateInit;
+// src/root_impl/magisk.rs
 
-const MAGISK_OFFICIAL: &str = "com.topjohnwu.magisk";
+//! Detection and interaction logic for the Magisk root solution.
+
+use crate::constants::MIN_MAGISK_VERSION;
+use log::{debug, info};
+use std::os::android::fs::MetadataExt;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::{fs, str};
+
+const MAGISK_OFFICIAL_PKG: &str = "com.topjohnwu.magisk";
 const MAGISK_THIRD_PARTIES: &[(&str, &str)] = &[
     ("alpha", "io.github.vvb2060.magisk"),
     ("kitsune", "io.github.huskydg.magisk"),
 ];
 
+/// Represents the detected version status of Magisk.
 pub enum Version {
     Supported,
     TooOld,
 }
 
-static VARIANT: LateInit<&str> = LateInit::new();
+/// Lazily detected package name of the installed Magisk variant.
+static MAGISK_VARIANT_PKG: OnceLock<&'static str> = OnceLock::new();
 
-pub fn get_magisk() -> Option<Version> {
-    if !VARIANT.initiated() {
-        Command::new("magisk")
-            .arg("-v")
-            .stdout(Stdio::piped())
-            .spawn()
-            .ok()
-            .and_then(|child| child.wait_with_output().ok())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|version| {
-                let third_party = MAGISK_THIRD_PARTIES.iter().find_map(|v| {
-                    version.contains(v.0).then_some(v.1)
-                });
-                VARIANT.init(third_party.unwrap_or(MAGISK_OFFICIAL));
-                info!("Magisk variant: {}", *VARIANT);
-            });
-    }
-    Command::new("magisk")
-        .arg("-V")
+/// Helper to execute a command and capture its stdout.
+fn run_command(program: &str, args: &[&str]) -> Option<String> {
+    Command::new(program)
+        .args(args)
         .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
+        .ok()?
+        .wait_with_output()
         .ok()
-        .and_then(|child| child.wait_with_output().ok())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|output| output.trim().parse::<i32>().ok())
-        .map(|version| {
-            if version >= MIN_MAGISK_VERSION {
-                Version::Supported
-            } else {
-                Version::TooOld
+}
+
+/// Detects the installed Magisk variant (Official, Alpha, Kitsune, etc.).
+fn detect_variant() -> &'static str {
+    if let Some(version_str) = run_command("magisk", &["-v"]) {
+        for (keyword, pkg_name) in MAGISK_THIRD_PARTIES {
+            if version_str.contains(keyword) {
+                info!("Detected Magisk variant: {}", keyword);
+                return pkg_name;
             }
-        })
-}
-
-pub fn uid_granted_root(uid: i32) -> bool {
-    Command::new("magisk")
-        .arg("--sqlite")
-        .arg(format!(
-            "select 1 from policies where uid={uid} and policy=2 limit 1"
-        ))
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()
-        .and_then(|child| child.wait_with_output().ok())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|output| output.is_empty())
-        == Some(false)
-}
-
-pub fn uid_should_umount(uid: i32) -> bool {
-    let output = Command::new("pm")
-        .args(["list", "packages", "--uid", &uid.to_string()])
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()
-        .and_then(|child| child.wait_with_output().ok())
-        .and_then(|output| String::from_utf8(output.stdout).ok());
-    let line = match output {
-        Some(line) => line,
-        None => return false,
-    };
-    let pkg = line
-        .strip_prefix("package:")
-        .and_then(|line| line.split(' ').next());
-    let pkg = match pkg {
-        Some(pkg) => pkg,
-        None => return false,
-    };
-    Command::new("magisk")
-        .arg("--sqlite")
-        .arg(format!(
-            "select 1 from denylist where package_name=\"{pkg}\" limit 1"
-        ))
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()
-        .and_then(|child| child.wait_with_output().ok())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|output| output.is_empty())
-        == Some(false)
-}
-
-// TODO: signature
-pub fn uid_is_manager(uid: i32) -> bool {
-    let output = Command::new("magisk")
-        .arg("--sqlite")
-        .arg(format!("select value from strings where key=\"requester\" limit 1"))
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()
-        .and_then(|child| child.wait_with_output().ok())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|output| output.trim().to_string());
-    if let Some(output) = output {
-        if let Some(manager) = output.strip_prefix("value=") {
-            return fs::metadata(format!("/data/user_de/0/{}", manager))
-                .map(|s| s.st_uid() == uid as u32)
-                .unwrap_or(false);
         }
     }
-    fs::metadata(format!("/data/user_de/0/{}", *VARIANT))
-        .map(|s| s.st_uid() == uid as u32)
-        .unwrap_or(false)
+    info!("Detected official Magisk variant.");
+    MAGISK_OFFICIAL_PKG
+}
+
+/// Detects if Magisk is installed and if its version is supported.
+pub fn detect_version() -> Option<Version> {
+    let version_str = run_command("magisk", &["-V"])?;
+    let version = version_str.trim().parse::<i32>().ok()?;
+
+    // As a side effect of successful version detection, cache the variant.
+    MAGISK_VARIANT_PKG.get_or_init(detect_variant);
+
+    if version >= MIN_MAGISK_VERSION {
+        Some(Version::Supported)
+    } else {
+        Some(Version::TooOld)
+    }
+}
+
+/// Checks if a UID has been granted root by querying the Magisk database.
+pub fn uid_granted_root(uid: i32) -> bool {
+    let query = format!("SELECT 1 FROM policies WHERE uid={uid} AND policy=2 LIMIT 1");
+    if let Some(output) = run_command("magisk", &["--sqlite", &query]) {
+        return !output.trim().is_empty();
+    }
+    false
+}
+
+/// Checks if a UID is on the denylist by querying the Magisk database.
+pub fn uid_should_umount(uid: i32) -> bool {
+    // 1. Find the primary package name for the given UID.
+    let packages_list = match run_command("pm", &["list", "packages", "--uid", &uid.to_string()]) {
+        Some(list) => list,
+        None => return false,
+    };
+
+    let pkg_name = packages_list
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("package:"))
+        .and_then(|pkg| pkg.split(' ').next());
+
+    let pkg_name = match pkg_name {
+        Some(name) => name,
+        None => return false,
+    };
+
+    // 2. Check if that package name is in the denylist table.
+    let query = format!("SELECT 1 FROM denylist WHERE package_name=\"{pkg_name}\" LIMIT 1");
+    if let Some(output) = run_command("magisk", &["--sqlite", &query]) {
+        return !output.trim().is_empty();
+    }
+    false
+}
+
+/// Checks if a UID belongs to the Magisk manager app.
+pub fn uid_is_manager(uid: i32) -> bool {
+    // First, try to get the 'requester' package name from the database, which is most reliable.
+    let query = "SELECT value FROM strings WHERE key=\"requester\" LIMIT 1";
+    if let Some(output) = run_command("magisk", &["--sqlite", &query]) {
+        if let Some(manager_pkg) = output.trim().strip_prefix("value=") {
+            if let Ok(metadata) = fs::metadata(format!("/data/user_de/0/{}", manager_pkg)) {
+                return metadata.st_uid() == uid as u32;
+            }
+        }
+    }
+
+    // Fallback to checking the cached variant package name.
+    if let Some(pkg_name) = MAGISK_VARIANT_PKG.get() {
+        if let Ok(metadata) = fs::metadata(format!("/data/user_de/0/{}", pkg_name)) {
+            return metadata.st_uid() == uid as u32;
+        }
+    }
+
+    debug!("Could not determine Magisk manager UID.");
+    false
 }
