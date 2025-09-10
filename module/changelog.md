@@ -1,11 +1,22 @@
-### 🐛 Bug Fixes & Improvements 🛠️
+## 🚀 **v2.0 - Advanced Stealth & Clarity** 🚀
 
-This is a hotfix release to address a critical bug introduced by a pre-release version of NDK (r29).
-This bug caused the `munmap` call in `libzygisk.so` to fail, leaving behind clear traces of NeoZygisk's injection.
+This is a complete rewrite, focused on elegant evasion techniques and a more maintainable, clear architecture!
 
-In addition to squashing that pesky bug, we've packed in a few other enhancements:
+#### 🥷 **Advanced Evasion Techniques**
 
-*   **🚀 Added support for KernelSU Next!** You can now use NeoZygisk with `com.rifsxd.ksunext`.
-*   **🛡️ Patched detection points in LSPlt.** We've addressed some recently discovered detection methods.
-*   **🔧 Fixed a kernel exploit.** A detection point related to a `ptrace_message` bug in Linux kernels prior to v6.1 has been resolved.
-*   **💥 Corrected a Zygote crash.** We've fixed an issue where module overlays could cause Zygote to crash.
+*   🛡️ **`atexit` Detection Neutralized**: Actively resets the global `atexit` handler array, erasing all module fingerprints.
+*   🧹 **Zygote Stack Cleaning**: Wipes root mount fossils from the Zygote stack to restore a pristine, non-root state.
+*   👻 **Direct Unmounting**: Aggressively unmounts traces from within Zygote before applications can inspect them.
+*   🧼 **Efficient Linker Cleaning**: Elegantly removes all library traces from memory using the `soinfo_unload` function.
+*   🧠 **Smarter Namespace Logic**: Refines mount logic to hide traces without creating new, detectable side-effects.
+
+---
+
+💡 **For Module Developers:**
+
+You no longer need to handle `atexit` evasion. NeoZygisk now completely neutralizes this detection vector for all loaded modules automatically! ✨
+
+#### 🔧 **Core Overhaul & Clarity**
+
+*   🏗️ **Total Rewrite**: Re-engineered the `Zygisk` daemon and `ptrace` monitor for maximum stability and clarity.
+*   ✨ **Modernized Internals**: Updated all core utilities for better performance, readability, and documentation.
