@@ -11,7 +11,7 @@
 
 use crate::constants::{DaemonSocketAction, MountNamespace, ProcessFlags, ZKSU_VERSION};
 use crate::utils::{self, UnixStreamExt};
-use crate::{constants, arch_select, root_impl};
+use crate::{lp_select, constants, root_impl};
 use anyhow::{Context as AnyhowContext, Result, bail};
 use log::{debug, error, info, trace, warn};
 use passfd::FdPassingExt;
@@ -24,7 +24,7 @@ use std::os::unix::process::CommandExt;
 use std::{
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
-    process::{Command, exit},
+    process::Command,
     sync::{Arc, Mutex, OnceLock},
     thread,
 };
@@ -148,7 +148,7 @@ fn initialize_globals() -> Result<()> {
         .set(format!(
             "{}/{}",
             TMP_PATH.get().unwrap(),
-            arch_select!("/cp32.sock", "/cp64.sock")
+            lp_select!("/cp32.sock", "/cp64.sock")
         ))
         .unwrap();
     Ok(())
@@ -190,9 +190,9 @@ fn send_startup_info(modules: &[Module]) -> Result<()> {
 fn get_arch() -> Result<&'static str> {
     let system_arch = utils::get_property("ro.product.cpu.abi")?;
     if system_arch.contains("arm") {
-        Ok(arch_select!("armeabi-v7a", "arm64-v8a"))
+        Ok(lp_select!("armeabi-v7a", "arm64-v8a"))
     } else if system_arch.contains("x86") {
-        Ok(arch_select!("x86", "x86_64"))
+        Ok(lp_select!("x86", "x86_64"))
     } else {
         bail!("Unsupported system architecture: {}", system_arch)
     }
@@ -280,74 +280,55 @@ fn spawn_companion(name: &str, lib_fd: RawFd) -> Result<Option<UnixStream>> {
     let self_exe = std::env::args().next().unwrap();
     let nice_name = self_exe.split('/').last().unwrap_or("zygiskd");
 
-    // This function encapsulates the fork/exec logic.
-    // It returns Ok(pid) in the parent, or executes the child and never returns.
-    // It returns Err in the parent if fork/exec fails.
-    let child_pid = spawn_companion_child(companion_sock, &self_exe, nice_name, name)?;
+    // The fork/exec logic is now handled directly here.
+    // # Safety
+    // This is highly unsafe because it uses `fork()` and `exec()`. The child
+    // process must not call any non-async-signal-safe functions before `exec()`.
+    unsafe {
+        let pid = libc::fork();
+        if pid < 0 {
+            // Fork failed
+            bail!(Error::last_os_error());
+        }
 
-    // --- Parent Process Logic ---
-    let mut status: libc::c_int = 0;
-    unsafe { libc::waitpid(child_pid, &mut status, 0) };
+        if pid == 0 {
+            // --- Child Process ---
+            drop(daemon_sock); // Child doesn't need the daemon's end of the socket.
 
-    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
-        // Child successfully set itself up, now establish communication.
+            // The companion socket FD must be passed to the new process,
+            // so we must remove the `FD_CLOEXEC` flag.
+            fcntl_setfd(companion_sock.as_fd(), FdFlags::empty())
+                .expect("Failed to clear CLOEXEC on companion socket");
+
+            // The first argument (`arg0`) is used to set a descriptive process name.
+            let arg0 = format!("{}-{}", nice_name, name);
+            let companion_fd_str = format!("{}", companion_sock.as_raw_fd());
+
+            // exec replaces the current process; it does not return on success.
+            let err = Command::new(&self_exe)
+                .arg0(arg0)
+                .arg("companion")
+                .arg(companion_fd_str)
+                .exec();
+
+            // If exec returns, it's always an error.
+            bail!("exec failed: {}", err);
+        }
+
+        // --- Parent Process ---
+        drop(companion_sock); // Parent doesn't need the companion's end of the socket.
+
+        // Now, establish communication with the newly spawned companion.
         daemon_sock.write_string(name)?;
         daemon_sock.send_fd(lib_fd)?;
+
+        // Wait for the companion's response to know if it loaded the module successfully.
         match daemon_sock.read_u8()? {
-            0 => Ok(None),              // Module has no companion entry point.
+            0 => Ok(None),              // Module has no companion entry point or failed to load.
             1 => Ok(Some(daemon_sock)), // Companion is ready.
             _ => bail!("Invalid response from companion setup"),
         }
-    } else {
-        bail!(
-            "Companion process for '{}' exited with non-zero status: {}",
-            name,
-            status
-        )
     }
-}
-
-/// The unsafe part of spawning a companion. This function forks and the child process execs.
-///
-/// # Safety
-/// This function is highly unsafe because it uses `fork()` and `exec()`.
-/// The child process must not call any non-async-signal-safe functions before `exec()`.
-/// We ensure this by having the child do minimal setup (clearing CLOEXEC) and then immediately
-/// calling `exec()`.
-fn spawn_companion_child(
-    companion_sock: UnixStream,
-    self_exe: &str,
-    nice_name: &str,
-    module_name: &str,
-) -> Result<libc::pid_t> {
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        bail!(Error::last_os_error());
-    }
-
-    if pid == 0 {
-        // --- Child Process ---
-        // The companion socket FD must be passed to the new process,
-        // so we must remove the `FD_CLOEXEC` flag.
-        fcntl_setfd(companion_sock.as_fd(), FdFlags::empty())
-            .expect("Failed to clear CLOEXEC on companion socket");
-
-        // The first argument (`arg0`) is used to set a descriptive process name.
-        let arg0 = format!("{}-{}", nice_name, module_name);
-        let companion_fd_str = format!("{}", companion_sock.as_raw_fd());
-
-        let _ = Command::new(self_exe)
-            .arg0(arg0)
-            .arg("companion")
-            .arg(companion_fd_str)
-            .exec(); // exec replaces the current process, it does not return.
-
-        // If exec returns, it's an error.
-        exit(127);
-    }
-
-    // --- Parent Process ---
-    Ok(pid)
 }
 
 // --- Action Handlers ---

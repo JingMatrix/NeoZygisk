@@ -5,7 +5,8 @@
 //! # Zygiskd Architecture Overview
 //!
 //! The daemon, injected applications, and companion processes are all distinct,
-//! separate processes. This diagram shows their interactions over time.
+//! separate processes. This diagram shows their interactions over time, focusing
+//! on how a direct connection is brokered between an App and a Companion.
 //!
 //! ```ascii
 //!                                   Zygiskd Architecture
@@ -18,8 +19,7 @@
 //! |    & creates sealed memfd |                                 |                             |
 //! |                           |                                 |                             |
 //! | 2. Listens on Unix socket |                                 |                             |
-//! |    (cp32.sock, cp64.sock) |                                 |                             |
-//! |                           |                                 |                             |
+//! |   (cp32.sock, cp64.sock)  |                                 |                             |
 //! |                           | <-[ 3.    Zygisk connects   ]-- |                             |
 //! |                           |                                 |                             |
 //! |                           | <-[ 4.  Requests module FDs ]-- |                             |
@@ -28,29 +28,26 @@
 //! |                           |                                 |   6. `dlopen`(memfd) &      |
 //! |                           |                                 |     runs module code        |
 //! |                           |                                 |                             |
-//! |                           | <-[ 7.  Requests companion  ]-- |                             |
+//! |                           | <-[ 7. Requests companion   ]-- | (Using its existing socket) |
 //! |                           |                                 |                             |
-//! | 8. Spawns Companion via   |                                 |                             |
-//! |    `fork()` & `exec()`.   |                                 |                             |
-//! |    It creates a socket    |                                 |                             |
-//! |    pair and gives one     |                                 |                             |
-//! |    end to the companion.  |                                 |                             |
-//! |           |               |                                 |                             |
-//! |           |               | --[ 9. The OTHER socket end ]-> |                             |
-//! |           |               |                                 |                             |
-//! +-----------|---------------+                                 |                             |
-//!             |                                                 |                             |
-//!             |                                                 | (Now holds other socket end)|
-//!             v                                                 |                             |
-//! +---------------------------+                                 |                             |
-//! |     Companion Process     |                                 |                             |
-//! | (Now holds one socket end)|                                 |                             |
-//! |                           |                                 |                             |
-//! |                           |                                 |                             |
-//! | <=======================[ 10. A direct and private connection ]=========================> |
-//! |                         [  is now established. The daemon is  ]                           |
-//! |                         [  no longer involved in this chat.   ]                           |
-//! +--------------------------------------+          +-----------------------------------------+
+//! | 8. `fork()` & `exec()`s a |                                 |                             |
+//! |    new Companion process. -----------------+                |                             |
+//! |           |               |                |                |                             |
+//! +-----------|---------------+                |                +-----------------------------+
+//!             |                                |                                ^
+//!             v                                |                                |
+//! +---------------------------+                |                                |
+//! |     Companion Process     |                |                                |
+//! +---------------------------+                |                                |
+//! |                           |                V                                |
+//! | <-[ 9. HANDOFF: Daemon  ]-+ (Zygiskd acts as broker, passing the FD)        |
+//! |    [ passes the App's   ] |                                                 |
+//! |    [ connection FD here.] |                                                 |
+//! |                           |                                                 |
+//! | <=======================[ 10. Direct connection is now live ]===============+
+//! |                         [   using the App's original socket.]
+//! |                         [   The daemon is out of the loop.  ]
+//! +---------------------------+
 //!
 //! ```
 //!
@@ -62,10 +59,10 @@
 //! 4.  **Request Module FDs:** The app asks the daemon for the file descriptors of all active modules.
 //! 5.  **Sends Lib (memfd):** The daemon securely sends the sealed `memfd`s to the app via File Descriptor Passing.
 //! 6.  **Load & Run:** The app process uses `dlopen` on the received file descriptor to load the module's code into its own memory space and execute it.
-//! 7.  **Request Companion:** If needed, the module code running inside the app asks the daemon to spawn its dedicated companion process.
-//! 8.  **Spawn & Distribute (Part 1):** The daemon forks to create a new companion process. It first creates a connected **socket pair**. It gives **one end** of this pair to the companion.
-//! 9.  **Distribute (Part 2):** The daemon then sends the **other end** of the socket pair to the App Process that requested it, using secure FD passing.
-//! 10. **Direct Connection:** With the brokering complete, the App and Companion processes now hold the two ends of a private communication channel and can communicate directly, efficiently, and securely.
+//! 7.  **Request Companion:** If needed, the module code running inside the app asks the daemon to spawn its dedicated companion process. This request is sent over its **existing socket connection**.
+//! 8.  **Spawn Companion:** The daemon forks and executes itself to create a new companion process.
+//! 9.  **Connection Handoff:** This is the critical brokering step. The daemon takes the **file descriptor** from the app's original connection and securely **passes this FD to the new companion process** over a private control socket.
+//! 10. **Direct Connection:** The companion receives the file descriptor and now holds the other end of the app's original socket. It can now communicate directly with the app. The daemon's brokering job is complete, and it is no longer involved in their conversation. This handoff is efficient and seamless from the app's perspective.
 //!
 //! This binary has multiple modes of operation based on its command-line arguments:
 //! - No arguments: Starts the main `zygiskd` daemon.

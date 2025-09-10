@@ -32,16 +32,16 @@ use std::{
 /// Selects an expression based on the target pointer width (32-bit vs 64-bit).
 #[cfg(target_pointer_width = "64")]
 #[macro_export]
-macro_rules! arch_select {
-    ($arch32:expr, $arch64:expr) => {
-        $arch64
+macro_rules! lp_select {
+    ($lp32:expr, $lp64:expr) => {
+        $lp64
     };
 }
 #[cfg(target_pointer_width = "32")]
 #[macro_export]
-macro_rules! arch_select {
-    ($arch32:expr, $arch64:expr) => {
-        $arch32
+macro_rules! lp_select {
+    ($lp32:expr, $lp64:expr) => {
+        $lp32
     };
 }
 
