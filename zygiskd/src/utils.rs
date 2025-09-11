@@ -176,8 +176,8 @@ pub fn save_mount_namespace(pid: i32, namespace_type: MountNamespace) -> Result<
                 unsafe {
                     rustix_thread::unshare_unsafe(rustix_thread::UnshareFlags::NEWNS).unwrap();
                 }
-                // Clean up module mounts.
-                revert_unmount().unwrap();
+                // Clean up root implemantation and module mounts.
+                clean_mount_namespace().unwrap();
             }
 
             // Signal to the parent that setup is complete.
@@ -224,7 +224,7 @@ pub fn save_mount_namespace(pid: i32, namespace_type: MountNamespace) -> Result<
 
 /// Unmounts filesystems related to root solutions (Magisk, APatch, KernelSU)
 /// from the current mount namespace.
-fn revert_unmount() -> Result<()> {
+fn clean_mount_namespace() -> Result<()> {
     let mount_infos = Process::myself()?.mountinfo()?;
     let mut unmount_targets: Vec<MountInfo> = Vec::new();
 
@@ -250,7 +250,8 @@ fn revert_unmount() -> Result<()> {
         let path_str = info.mount_point.to_str().unwrap_or("");
         let mount_source_str = info.mount_source.as_deref();
 
-        let should_unmount = path_str.starts_with("/data/adb/modules")
+        let should_unmount = info.root.starts_with("/adb/modules")
+            || path_str.starts_with("/data/adb/modules")
             || (root_source.is_some() && mount_source_str == root_source)
             || (ksu_module_source.is_some() && info.mount_source == ksu_module_source);
 
