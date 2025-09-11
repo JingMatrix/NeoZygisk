@@ -430,6 +430,7 @@ static bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t
         if (trace.target.rfind("/product", 0) == 0) {
             if (trace.target.rfind("/product/bin", 0) == 0) continue;
             if (!is_magisk && trace.target != "/product") continue;
+            // workaround for zygote resource overlay (JingMatrix/NeoZygisk#26)
             LOGV("abort unmounting zygote due to prohibited target: [%s]", trace.raw_info.c_str());
             return true;
         }
@@ -449,11 +450,6 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
 
         if (!abort_zygote_unmount(g_hook->zygote_traces, info_flags)) {
             auto removal_predicate = [](const mount_info &trace) {
-                if (trace.source == "magisk") {
-                    LOGV("skip magisk specific mounts for compatibility: %s",
-                         trace.raw_info.c_str());
-                    return false;
-                }
                 LOGV("unmounting %s (mnt_id: %u)", trace.target.c_str(), trace.id);
                 if (umount2(trace.target.c_str(), MNT_DETACH) == 0) {
                     return true;  // Success: Mark for removal.
