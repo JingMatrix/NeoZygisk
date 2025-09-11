@@ -426,13 +426,27 @@ static bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t
         return true;
     }
     bool is_magisk = info_flags & PROCESS_ROOT_IS_MAGISK;
+    const mount_info *prohibited_target = nullptr;
     for (const auto &trace : traces) {
-        if (trace.target.rfind("/product", 0) == 0) {
-            if (trace.target.rfind("/product/bin", 0) == 0) continue;
+        if (trace.target.starts_with("/product")) {
+            if (trace.target.starts_with("/product/bin")) continue;
             if (!is_magisk && trace.target != "/product") continue;
-            LOGV("abort unmounting zygote due to prohibited target: [%s]", trace.raw_info.c_str());
-            return true;
+            // abort unmounting as modules might modify /product/overlay
+            // see JingMatrix/NeoZygisk#26 for details
+            prohibited_target = &trace;
+            break;
         }
+        if (trace.target.starts_with("/system/priv-app") && trace.target.ends_with(".apk")) {
+            // allow mount application for systemwise installation
+            // see JingMatrix/NeoZygisk#58 for details
+            prohibited_target = &trace;
+            break;
+        }
+    }
+    if (prohibited_target != nullptr) {
+        LOGV("abort unmounting zygote due to prohibited target: [%s]",
+             prohibited_target->raw_info.c_str());
+        return true;
     }
     return false;
 }

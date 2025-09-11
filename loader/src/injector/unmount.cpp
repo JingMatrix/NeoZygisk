@@ -14,10 +14,6 @@
 #include "module.hpp"
 #include "zygisk.hpp"
 
-static bool starts_with(const std::string& str, const std::string& prefix) {
-    return str.rfind(prefix, 0) == 0;
-}
-
 std::vector<mount_info> parse_mount_info(const char* pid) {
     std::string path = "/proc/";
     path += pid;
@@ -121,7 +117,7 @@ std::vector<mount_info> check_zygote_traces(uint32_t info_flags) {
     std::string kernel_su_module_source;
     if (is_kernelsu) {
         for (const auto& info : mount_infos) {
-            if (info.target == "/data/adb/modules" && starts_with(info.source, "/dev/block/loop")) {
+            if (info.target == "/data/adb/modules" && info.source.starts_with("/dev/block/loop")) {
                 kernel_su_module_source = info.source;
                 LOGV("detected KernelSU loop device module source: %s",
                      kernel_su_module_source.c_str());
@@ -132,8 +128,8 @@ std::vector<mount_info> check_zygote_traces(uint32_t info_flags) {
 
     for (const auto& info : mount_infos) {
         const bool should_unmount =
-            starts_with(info.root, "/adb/modules") ||
-            starts_with(info.target, "/data/adb/modules") || (info.source == mount_source_name) ||
+            info.root.starts_with("/adb/modules") || info.target.starts_with("/data/adb/modules") ||
+            (info.source == mount_source_name) ||
             (!kernel_su_module_source.empty() && info.source == kernel_su_module_source);
 
         if (should_unmount) {
