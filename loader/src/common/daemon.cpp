@@ -9,7 +9,6 @@
 
 namespace zygiskd {
 static std::string TMP_PATH;
-static bool caching_action_called = false;
 
 void Init(const char *path) { TMP_PATH = path; }
 
@@ -59,9 +58,7 @@ uint32_t GetProcessFlags(uid_t uid) {
     return socket_utils::read_u32(fd);
 }
 
-void CacheMountNamespace(pid_t pid, bool forced) {
-    if (caching_action_called && !forced) return;
-    caching_action_called = true;
+void CacheMountNamespace(pid_t pid) {
     UniqueFd fd = Connect(1);
     if (fd == -1) {
         PLOGE("CacheMountNamespace");
@@ -80,11 +77,7 @@ std::string UpdateMountNamespace(MountNamespace type) {
     socket_utils::write_u8(fd, (uint8_t) type);
     uint32_t target_pid = socket_utils::read_u32(fd);
     int target_fd = (int) socket_utils::read_u32(fd);
-    if (target_fd == 0) {
-        // Certainly the case for the first 32bit app process
-        CacheMountNamespace(getpid(), true);
-        return "not cached yet";
-    }
+    if (target_fd == 0) return "not cached yet";
     return "/proc/" + std::to_string(target_pid) + "/fd/" + std::to_string(target_fd);
 }
 

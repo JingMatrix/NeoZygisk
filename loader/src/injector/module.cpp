@@ -262,6 +262,12 @@ void ZygiskContext::fork_pre() {
     // Do our own fork before loading any 3rd party code
     // First block SIGCHLD, unblock after original fork is done
     sigmask(SIG_BLOCK, SIGCHLD);
+
+    if (!g_hook->mount_namespace_cached) {
+        zygiskd::CacheMountNamespace(getpid());
+        g_hook->mount_namespace_cached = true;
+    }
+
     pid = old_fork();
 
     if (!is_child()) return;
@@ -371,8 +377,6 @@ void ZygiskContext::app_specialize_post() {
 void ZygiskContext::server_specialize_pre() {
     run_modules_pre();
     zygiskd::SystemServerStarted();
-    zygiskd::CacheMountNamespace(getpid());
-    // system server is forked from zygote64
 }
 
 void ZygiskContext::server_specialize_post() { run_modules_post(); }
@@ -444,7 +448,8 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
     LOGV("pre forkAndSpecialize [%s]", process);
     flags |= APP_FORK_AND_SPECIALIZE;
 
-    if (!g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0) {
+    if (g_hook->mount_namespace_cached && !g_hook->zygote_unmounted &&
+        g_hook->zygote_traces.size() == 0) {
         info_flags = zygiskd::GetProcessFlags(args.app->uid);
 
         g_hook->zygote_traces = check_zygote_traces(info_flags);
