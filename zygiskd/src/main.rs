@@ -73,6 +73,7 @@
 mod companion;
 mod constants;
 mod dl;
+mod mount;
 mod root_impl;
 mod utils;
 mod zygiskd;
@@ -124,7 +125,7 @@ fn start() {
 /// It sets up the environment and launches the core daemon logic.
 fn main_daemon_entry() -> anyhow::Result<()> {
     // We must be in the root mount namespace to function correctly.
-    utils::switch_mount_namespace(1)?;
+    mount::switch_mount_namespace(1)?;
     // Detect and globally set the root implementation.
     root_impl::setup();
     log::info!("Current root implementation: {:?}", root_impl::get());
