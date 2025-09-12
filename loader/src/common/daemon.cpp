@@ -74,13 +74,17 @@ std::string UpdateMountNamespace(MountNamespace type) {
     UniqueFd fd = Connect(1);
     if (fd == -1) {
         PLOGE("UpdateMountNamespace");
-        return "";
+        return "socket not connected";
     }
     socket_utils::write_u8(fd, (uint8_t) SocketAction::UpdateMountNamespace);
     socket_utils::write_u8(fd, (uint8_t) type);
     uint32_t target_pid = socket_utils::read_u32(fd);
     int target_fd = (int) socket_utils::read_u32(fd);
-    if (target_fd == 0) return "";
+    if (target_fd == 0) {
+        // Certainly the case for the first 32bit app process
+        CacheMountNamespace(getpid(), true);
+        return "not cached yet";
+    }
     return "/proc/" + std::to_string(target_pid) + "/fd/" + std::to_string(target_fd);
 }
 

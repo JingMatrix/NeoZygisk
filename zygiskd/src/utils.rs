@@ -4,24 +4,18 @@
 //!
 //! This module provides helpers for:
 //! - Interacting with Android properties and SELinux contexts.
-//! - Managing and caching Linux mount namespaces.
 //! - Low-level Unix socket and pipe I/O.
 //! - A trait (`UnixStreamExt`) for simplified socket communication.
 
-use crate::{constants::MountNamespace, root_impl};
-use anyhow::{Result, bail};
-use log::{debug, error, trace};
-use procfs::process::{MountInfo, Process};
+use anyhow::Result;
 use rustix::net::{
     AddressFamily, SendFlags, SocketAddrUnix, SocketType, bind, connect, listen, sendto, socket,
 };
 use rustix::thread as rustix_thread;
 use std::ffi::{CString, c_char};
-use std::io::Error;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
-use std::sync::OnceLock;
 use std::{
     fs,
     io::{Read, Write},
@@ -101,180 +95,6 @@ pub fn get_property(name: &str) -> Result<String> {
     } else {
         Ok(String::new())
     }
-}
-
-// --- Mount Namespace Management ---
-
-/// Switches the current thread into the mount namespace of a given process.
-pub fn switch_mount_namespace(pid: i32) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let mnt_ns_file = fs::File::open(format!("/proc/{}/ns/mnt", pid))?;
-    rustix_thread::move_into_link_name_space(
-        mnt_ns_file.as_fd(),
-        Some(rustix_thread::LinkNameSpaceType::Mount),
-    )?;
-    // `setns` can change the current working directory, so we restore it.
-    std::env::set_current_dir(cwd)?;
-    Ok(())
-}
-
-/// File descriptors that hold open references to the clean and root mount namespaces,
-/// preventing them from being destroyed even if all processes within them terminate.
-static CLEAN_MNT_NS_FD: OnceLock<OwnedFd> = OnceLock::new();
-static ROOT_MNT_NS_FD: OnceLock<OwnedFd> = OnceLock::new();
-
-/// Saves a handle to a specific mount namespace (`Clean` or `Root`) so it can be entered later.
-///
-/// This is a complex operation required to prepare an environment for Zygisk modules.
-///
-/// # Arguments
-/// * `pid` - The PID of a process in the target mount namespace (e.g., Zygote's PID).
-///           If -1, this function assumes the namespace has already been cached and just returns the FD.
-/// * `namespace_type` - The type of namespace to cache.
-///
-/// # Mechanism
-/// 1. A child process is forked.
-/// 2. The child switches into the target process's mount namespace.
-/// 3. If a `Clean` namespace is requested, the child performs an additional `unshare(CLONE_NEWNS)`
-///    and then unmounts all Magisk/KernelSU/APatch-related filesystems to create a "clean" state.
-/// 4. The parent process waits for the child to finish setting up the namespace. A pipe is used
-///    for synchronization.
-/// 5. The parent then opens `/proc/<child_pid>/ns/mnt`, which gives it a file descriptor
-///    to the child's newly prepared namespace.
-/// 6. This file descriptor is stored in one of the static `OnceLock` variables, keeping the
-///    namespace alive indefinitely.
-pub fn save_mount_namespace(pid: i32, namespace_type: MountNamespace) -> Result<i32> {
-    let ns_fd_cell = match namespace_type {
-        MountNamespace::Clean => &CLEAN_MNT_NS_FD,
-        MountNamespace::Root => &ROOT_MNT_NS_FD,
-    };
-
-    if let Some(fd) = ns_fd_cell.get() {
-        return Ok(fd.as_raw_fd());
-    }
-
-    if pid == -1 {
-        bail!(
-            "Mount namespace of type {:?} requested but not yet cached.",
-            namespace_type
-        );
-    }
-
-    // Create a pipe for synchronization between parent and child.
-    let (pipe_reader, pipe_writer) = rustix::pipe::pipe()?;
-
-    match unsafe { libc::fork() } {
-        0 => {
-            // --- Child Process ---
-            // Close the side of the pipe we don't use.
-            drop(pipe_reader);
-            // Switch into the target process's namespace.
-            switch_mount_namespace(pid).unwrap();
-
-            if namespace_type == MountNamespace::Clean {
-                // Create a new, private mount namespace for ourselves.
-                unsafe {
-                    rustix_thread::unshare_unsafe(rustix_thread::UnshareFlags::NEWNS).unwrap();
-                }
-                // Clean up root implemantation and module mounts.
-                clean_mount_namespace().unwrap();
-            }
-
-            // Signal to the parent that setup is complete.
-            let sig: [u8; 1] = [0];
-            rustix::io::write(pipe_writer, &sig).unwrap();
-
-            // Wait indefinitely. The parent will kill us after it has the FD.
-            // A simple sleep loop is fine here.
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(60));
-            }
-        }
-        child_pid if child_pid > 0 => {
-            // --- Parent Process ---
-            drop(pipe_writer);
-
-            // Wait for the signal from the child.
-            let mut buf: [u8; 1] = [0];
-            rustix::io::read(pipe_reader, &mut buf)?;
-            trace!("Child {} finished setting up mount namespace.", child_pid);
-
-            let ns_path = format!("/proc/{}/ns/mnt", child_pid);
-            let ns_file = fs::File::open(&ns_path)?;
-
-            // We have the FD, we can now terminate the child process.
-            unsafe { libc::kill(child_pid, libc::SIGKILL) };
-            unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), 0) };
-
-            let raw_fd = ns_file.as_raw_fd();
-            ns_fd_cell
-                .set(ns_file.into())
-                .map_err(|_| anyhow::anyhow!("Failed to set OnceLock for namespace FD"))?;
-
-            match namespace_type {
-                MountNamespace::Clean => trace!("CLEAN_MNT_NS_FD cached as {}", raw_fd),
-                MountNamespace::Root => trace!("ROOT_MNT_NS_FD cached as {}", raw_fd),
-            }
-
-            Ok(raw_fd)
-        }
-        _ => bail!(Error::last_os_error()),
-    }
-}
-
-/// Unmounts filesystems related to root solutions (Magisk, APatch, KernelSU)
-/// from the current mount namespace.
-fn clean_mount_namespace() -> Result<()> {
-    let mount_infos = Process::myself()?.mountinfo()?;
-    let mut unmount_targets: Vec<MountInfo> = Vec::new();
-
-    let root_source = match root_impl::get() {
-        root_impl::RootImpl::APatch => Some("APatch"),
-        root_impl::RootImpl::KernelSU => Some("KSU"),
-        root_impl::RootImpl::Magisk => Some("magisk"),
-        _ => None,
-    };
-
-    let ksu_module_source: Option<String> =
-        if matches!(root_impl::get(), root_impl::RootImpl::KernelSU) {
-            mount_infos
-                .iter()
-                .find(|info| info.mount_point.as_path().to_str() == Some("/data/adb/modules"))
-                .and_then(|info| info.mount_source.clone())
-                .filter(|source| source.starts_with("/dev/block/loop"))
-        } else {
-            None
-        };
-
-    for info in mount_infos {
-        let path_str = info.mount_point.to_str().unwrap_or("");
-        let mount_source_str = info.mount_source.as_deref();
-
-        let should_unmount = info.root.starts_with("/adb/modules")
-            || path_str.starts_with("/data/adb/modules")
-            || (root_source.is_some() && mount_source_str == root_source)
-            || (ksu_module_source.is_some() && info.mount_source == ksu_module_source);
-
-        if should_unmount {
-            unmount_targets.push(info);
-        }
-    }
-
-    // Unmount in reverse order of mnt_id to handle nested mounts correctly.
-    unmount_targets.sort_by_key(|a| std::cmp::Reverse(a.mnt_id));
-
-    for target in unmount_targets {
-        let path = target.mount_point.to_str().unwrap_or("");
-        debug!("Unmounting {} (mnt_id: {})", path, target.mnt_id);
-        if let Ok(path_cstr) = CString::new(path.to_string()) {
-            unsafe {
-                if libc::umount2(path_cstr.as_ptr(), libc::MNT_DETACH) == -1 {
-                    error!("Failed to unmount {}: {}", path, Error::last_os_error());
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 // --- Unix Socket and IPC Extensions ---
