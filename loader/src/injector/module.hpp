@@ -321,7 +321,6 @@ struct HookContext {
     // std::array<JNINativeMethod> zygote_methods
     void *start_addr = nullptr;
     size_t block_size = 0;
-    bool mount_namespace_cached = false;
     bool should_spoof_maps = false;
     bool should_unmap = false;
     bool skip_hooking_unloader = false;

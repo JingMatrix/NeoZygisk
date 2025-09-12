@@ -262,12 +262,6 @@ void ZygiskContext::fork_pre() {
     // Do our own fork before loading any 3rd party code
     // First block SIGCHLD, unblock after original fork is done
     sigmask(SIG_BLOCK, SIGCHLD);
-
-    if (!g_hook->mount_namespace_cached) {
-        zygiskd::CacheMountNamespace(getpid());
-        g_hook->mount_namespace_cached = true;
-    }
-
     pid = old_fork();
 
     if (!is_child()) return;
@@ -413,6 +407,7 @@ void ZygiskContext::nativeForkSystemServer_pre() {
     fork_pre();
     if (is_child()) {
         server_specialize_pre();
+        zygiskd::CacheMountNamespace(getpid());
     }
     sanitize_fds();
 }
@@ -425,7 +420,8 @@ void ZygiskContext::nativeForkSystemServer_post() {
     fork_post();
 }
 
-static bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t info_flags) {
+#if defined(__LP64__)
+bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t info_flags) {
     if (traces.size() == 0) {
         LOGV("abort unmounting zygote with an empty trace list");
         return true;
@@ -442,14 +438,15 @@ static bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t
     }
     return false;
 }
+#endif
 
 void ZygiskContext::nativeForkAndSpecialize_pre() {
     process = env->GetStringUTFChars(args.app->nice_name, nullptr);
     LOGV("pre forkAndSpecialize [%s]", process);
     flags |= APP_FORK_AND_SPECIALIZE;
 
-    if (g_hook->mount_namespace_cached && !g_hook->zygote_unmounted &&
-        g_hook->zygote_traces.size() == 0) {
+#if defined(__LP64__)
+    if (!g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0) {
         info_flags = zygiskd::GetProcessFlags(args.app->uid);
 
         g_hook->zygote_traces = check_zygote_traces(info_flags);
@@ -472,6 +469,7 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
             g_hook->zygote_unmounted = true;
         }
     }
+#endif
 
     fork_pre();
     if (is_child()) {
