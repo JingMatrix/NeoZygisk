@@ -9,9 +9,10 @@
 //! - Handling requests such as providing module libraries, querying process flags,
 //!   and managing companion processes.
 
-use crate::constants::{DaemonSocketAction, MountNamespace, ProcessFlags, ZKSU_VERSION};
+use crate::constants::{DaemonSocketAction, ProcessFlags, ZKSU_VERSION};
+use crate::mount::{MountNamespace, MountNamespaceManager};
 use crate::utils::{self, UnixStreamExt};
-use crate::{lp_select, constants, root_impl};
+use crate::{constants, lp_select, root_impl};
 use anyhow::{Context as AnyhowContext, Result, bail};
 use log::{debug, error, info, trace, warn};
 use passfd::FdPassingExt;
@@ -37,9 +38,10 @@ struct Module {
     companion: Mutex<Option<UnixStream>>,
 }
 
-/// The shared context for the daemon, containing all loaded modules.
+/// The shared context for the daemon, containing all loaded modules and a mount namespace manager
 struct AppContext {
     modules: Vec<Module>,
+    mount_manager: Arc<MountNamespaceManager>,
 }
 
 // Global paths, initialized once at startup.
@@ -55,7 +57,11 @@ pub fn main() -> Result<()> {
     let modules = load_modules()?;
     send_startup_info(&modules)?;
 
-    let context = Arc::new(AppContext { modules });
+    let mount_manager = Arc::new(MountNamespaceManager::new());
+    let context = Arc::new(AppContext {
+        modules,
+        mount_manager,
+    });
     let listener = create_daemon_socket()?;
 
     info!("Daemon listening on {}", DAEMON_SOCKET_PATH.get().unwrap());
@@ -83,8 +89,12 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
         // These actions are lightweight and handled synchronously.
         DaemonSocketAction::CacheMountNamespace => {
             let pid = stream.read_u32()? as i32;
-            utils::save_mount_namespace(pid, MountNamespace::Clean)?;
-            utils::save_mount_namespace(pid, MountNamespace::Root)?;
+            context
+                .mount_manager
+                .save_mount_namespace(pid, MountNamespace::Clean)?;
+            context
+                .mount_manager
+                .save_mount_namespace(pid, MountNamespace::Root)?;
         }
         DaemonSocketAction::PingHeartbeat => {
             let value = constants::ZYGOTE_INJECTED;
@@ -125,7 +135,9 @@ fn handle_threaded_action(
 ) -> Result<()> {
     match action {
         DaemonSocketAction::GetProcessFlags => handle_get_process_flags(&mut stream),
-        DaemonSocketAction::UpdateMountNamespace => handle_update_mount_namespace(&mut stream),
+        DaemonSocketAction::UpdateMountNamespace => {
+            handle_update_mount_namespace(&mut stream, context)
+        }
         DaemonSocketAction::ReadModules => handle_read_modules(&mut stream, context),
         DaemonSocketAction::RequestCompanionSocket => {
             handle_request_companion_socket(&mut stream, context)
@@ -360,11 +372,16 @@ fn handle_get_process_flags(stream: &mut UnixStream) -> Result<()> {
     Ok(())
 }
 
-fn handle_update_mount_namespace(stream: &mut UnixStream) -> Result<()> {
+fn handle_update_mount_namespace(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
     let namespace_type = MountNamespace::try_from(stream.read_u8()?)?;
     stream.write_u32(unsafe { libc::getpid() } as u32)?;
-    let fd = utils::save_mount_namespace(-1, namespace_type)?;
-    stream.write_u32(fd as u32)?;
+    if let Some(fd) = context.mount_manager.get_namespace_fd(namespace_type) {
+        // Namespace is already cached, send the FD to the client.
+        stream.write_u32(fd as u32)?;
+    } else {
+        error!("Namespace {:?} is not cached yet.", namespace_type);
+        stream.write_u32(0)?;
+    }
     Ok(())
 }
 

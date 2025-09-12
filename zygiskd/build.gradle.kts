@@ -1,3 +1,6 @@
+import org.gradle.process.ExecOperations
+import javax.inject.Inject
+
 plugins {
     alias(libs.plugins.agp.lib)
     alias(libs.plugins.rust.android)
@@ -11,9 +14,9 @@ val verCode: Int by rootProject.extra
 val verName: String by rootProject.extra
 val commitHash: String by rootProject.extra
 
-android.buildFeatures {
-    androidResources = false
-    buildConfig = false
+android {
+    androidResources.enable = false
+    buildFeatures.buildConfig = false
 }
 
 cargo {
@@ -22,7 +25,7 @@ cargo {
     targetIncludes = arrayOf("zygiskd")
     targets = listOf("arm64", "arm", "x86", "x86_64")
     targetDirectory = "build/intermediates/rust"
-    val isDebug = gradle.startParameter.taskNames.any { it.toLowerCase().contains("debug") }
+    val isDebug = gradle.startParameter.taskNames.any { it.lowercase().contains("debug") }
     profile = if (isDebug) "debug" else "release"
     exec = { spec, _ ->
         spec.environment("ANDROID_NDK_HOME", android.ndkDirectory.path)
@@ -34,35 +37,50 @@ cargo {
     }
 }
 
-afterEvaluate {
-    task<Task>("buildAndStrip") {
-        dependsOn(":zygiskd:cargoBuild")
-        val isDebug = gradle.startParameter.taskNames.any { it.toLowerCase().contains("debug") }
-        doLast {
-            val dir = File(buildDir, "rustJniLibs/android")
-            val prebuilt = File(android.ndkDirectory, "toolchains/llvm/prebuilt").listFiles()!!.first()
-            val binDir = File(prebuilt, "bin")
-            val symbolDir = File(buildDir, "symbols/${if (isDebug) "debug" else "release"}")
-            symbolDir.mkdirs()
-            val suffix = if (prebuilt.name.contains("windows")) ".exe" else ""
-            val strip = File(binDir, "llvm-strip$suffix")
-            val objcopy = File(binDir, "llvm-objcopy$suffix")
-            dir.listFiles()!!.forEach {
-                if (!it.isDirectory) return@forEach
-                val symbolPath = File(symbolDir, "${it.name}/zygiskd.debug")
-                symbolPath.parentFile.mkdirs()
-                exec {
-                    workingDir = it
-                    commandLine(objcopy, "--only-keep-debug", "zygiskd", symbolPath)
-                }
-                exec {
-                    workingDir = it
-                    commandLine(strip, "--strip-all", "zygiskd")
-                }
-                exec {
-                    workingDir = it
-                    commandLine(objcopy, "--add-gnu-debuglink", symbolPath, "zygiskd")
-                }
+// An interface to safely inject the ExecOperations service for use in doLast {}.
+interface ExecOperationsService {
+    @get:Inject
+    val execOperations: ExecOperations
+}
+
+tasks.register("buildAndStrip") {
+    dependsOn(":zygiskd:cargoBuild")
+
+    // Create a holder for the exec service during the configuration phase.
+    val serviceHolder = project.objects.newInstance<ExecOperationsService>()
+
+    doLast {
+        val isDebug = gradle.startParameter.taskNames.any { it.lowercase().contains("debug") }
+
+        val buildDir = layout.buildDirectory.get().asFile
+        val dir = buildDir.resolve("rustJniLibs/android")
+        val prebuilt = android.ndkDirectory.resolve("toolchains/llvm/prebuilt").listFiles()!!.first()
+        val binDir = prebuilt.resolve("bin")
+        val symbolDir = buildDir.resolve("symbols/${if (isDebug) "debug" else "release"}")
+        symbolDir.mkdirs()
+        val isWindows = System.getProperty("os.name").lowercase().contains("win")
+        val suffix = if (isWindows) ".exe" else ""
+        val strip = binDir.resolve("llvm-strip$suffix")
+        val objcopy = binDir.resolve("llvm-objcopy$suffix")
+
+        // Get the exec service from the holder during the execution phase.
+        val execOps = serviceHolder.execOperations
+
+        dir.listFiles()!!.forEach {
+            if (!it.isDirectory) return@forEach
+            val symbolPath = symbolDir.resolve("${it.name}/zygiskd.debug")
+            symbolPath.parentFile.mkdirs()
+            execOps.exec {
+                workingDir = it
+                commandLine(objcopy, "--only-keep-debug", "zygiskd", symbolPath)
+            }
+            execOps.exec {
+                workingDir = it
+                commandLine(strip, "--strip-all", "zygiskd")
+            }
+            execOps.exec {
+                workingDir = it
+                commandLine(objcopy, "--add-gnu-debuglink", symbolPath, "zygiskd")
             }
         }
     }
