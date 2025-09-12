@@ -1,22 +1,31 @@
 import com.android.build.gradle.LibraryExtension
 import java.io.ByteArrayOutputStream
+import javax.inject.Inject
+import org.gradle.process.ExecOperations
 
 plugins {
     alias(libs.plugins.agp.lib) apply false
 }
 
-fun String.execute(currentWorkingDir: File = file("./")): String {
-    val byteOut = ByteArrayOutputStream()
-    project.exec {
-        workingDir = currentWorkingDir
-        commandLine = split("\\s".toRegex())
-        standardOutput = byteOut
+// Helper class to get access to the ExecOperations service
+abstract class GitExecutor @Inject constructor(private val execOperations: ExecOperations) {
+    fun execute(command: String, currentWorkingDir: File): String {
+        val byteOut = ByteArrayOutputStream()
+        execOperations.exec {
+            workingDir = currentWorkingDir
+            commandLine = command.split("\\s".toRegex())
+            standardOutput = byteOut
+        }
+        return String(byteOut.toByteArray()).trim()
     }
-    return String(byteOut.toByteArray()).trim()
 }
 
-val gitCommitCount = "git rev-list HEAD --count".execute().toInt()
-val gitCommitHash = "git rev-parse --verify --short HEAD".execute()
+// Instantiate the helper class using Gradle's object factory
+val gitExecutor = objects.newInstance(GitExecutor::class.java)
+
+// Use the helper to execute the git commands
+val gitCommitCount = gitExecutor.execute("git rev-list HEAD --count", rootDir).toInt()
+val gitCommitHash = gitExecutor.execute("git rev-parse --verify --short HEAD", rootDir)
 
 val moduleId by extra("zygisksu")
 val moduleName by extra("NeoZygisk")
@@ -42,7 +51,7 @@ val androidSourceCompatibility by extra(JavaVersion.VERSION_21)
 val androidTargetCompatibility by extra(JavaVersion.VERSION_21)
 
 tasks.register("Delete", Delete::class) {
-    delete(rootProject.buildDir)
+    delete(rootProject.layout.buildDirectory)
 }
 
 fun Project.configureBaseExtension() {
@@ -54,10 +63,10 @@ fun Project.configureBaseExtension() {
 
         defaultConfig {
             minSdk = androidMinSdkVersion
-            targetSdk = androidTargetSdkVersion
         }
 
         lint {
+            targetSdk = androidTargetSdkVersion
             abortOnError = true
         }
     }
