@@ -120,7 +120,7 @@ public:
     void notify_init_detached();
 
     // Public Accessors for owned components
-    ZygoteAbiManager &get_abi_manager(bool is_64bit);
+    ZygoteAbiManager &get_abi_manager();
     TracingState get_tracing_state() const;
 
 private:
@@ -165,15 +165,13 @@ private:
     };
 
     void set_tracing_state(TracingState state);
-    void write_abi_status_section(std::string &status_text, const Status &daemon_status,
-                                  const char *abi_name);
+    void write_abi_status_section(std::string &status_text, const Status &daemon_status);
 
     // Owned Components (Declaration order must match initializer list)
     EventLoop event_loop_;
     SocketHandler socket_handler_;
     SigChldHandler ptrace_handler_;
-    ZygoteAbiManager zygote64_;
-    ZygoteAbiManager zygote32_;
+    ZygoteAbiManager zygote_;
 
     // Private State
     TracingState tracing_state_;

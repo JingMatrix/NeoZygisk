@@ -2,7 +2,6 @@
 
 //! Defines global constants, enums, and bitflags used throughout the project.
 
-use crate::lp_select;
 use bitflags::bitflags;
 use konst::primitive::parse_i32;
 use konst::unwrap_ctx;
@@ -38,13 +37,13 @@ pub const PATH_MODULES_DIR: &str = "..";
 // These are magic numbers used in communication with the controller.
 
 /// IPC code indicating that Zygote has been successfully injected.
-pub const ZYGOTE_INJECTED: i32 = lp_select!(5, 4);
+pub const ZYGOTE_INJECTED: i32 = 4;
 /// IPC code for sending daemon status information.
-pub const DAEMON_SET_INFO: i32 = lp_select!(7, 6);
+pub const DAEMON_SET_INFO: i32 = 5;
 /// IPC code for sending daemon error information.
-pub const DAEMON_SET_ERROR_INFO: i32 = lp_select!(9, 8);
+pub const DAEMON_SET_ERROR_INFO: i32 = 6;
 /// IPC code indicating that the Android system server has started.
-pub const SYSTEM_SERVER_STARTED: i32 = 10;
+pub const SYSTEM_SERVER_STARTED: i32 = 7;
 
 /// Defines the set of actions that can be requested from the daemon over its main Unix socket.
 #[derive(Debug, Eq, PartialEq, TryFromPrimitive, Copy, Clone)]

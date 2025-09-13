@@ -21,20 +21,22 @@ AppMonitor::AppMonitor()
     : event_loop_(),
       socket_handler_(*this),
       ptrace_handler_(*this),
-      zygote64_(*this, true),
-      zygote32_(*this, false),
-      tracing_state_(TRACING) {}
-
-ZygoteAbiManager &AppMonitor::get_abi_manager(bool is_64bit) {
-    return is_64bit ? zygote64_ : zygote32_;
+#if defined(__LP64__)
+      zygote_(*this, true),
+#else
+      zygote_(*this, false),
+#endif
+      tracing_state_(TRACING) {
 }
+
+ZygoteAbiManager &AppMonitor::get_abi_manager() { return zygote_; }
 
 TracingState AppMonitor::get_tracing_state() const { return tracing_state_; }
 
 void AppMonitor::set_tracing_state(TracingState state) { tracing_state_ = state; }
 
-void AppMonitor::write_abi_status_section(std::string &status_text, const Status &daemon_status,
-                                          const char *abi_name) {
+void AppMonitor::write_abi_status_section(std::string &status_text, const Status &daemon_status) {
+    auto abi_name = this->zygote_.abi_name_;
     if (daemon_status.supported) {
         status_text += "\tzygote";
         status_text += abi_name;
@@ -97,13 +99,10 @@ void AppMonitor::update_status() {
     std::stringstream ss;
     ss << pre_section_ << "\n" << status_text << "\n\n";
 
-    std::string abi_section_64;
-    write_abi_status_section(abi_section_64, zygote64_.get_status(), "64");
+    std::string abi_section;
+    write_abi_status_section(abi_section, zygote_.get_status());
 
-    std::string abi_section_32;
-    write_abi_status_section(abi_section_32, zygote32_.get_status(), "32");
-
-    ss << abi_section_64 << "\n\n" << abi_section_32 << "\n\n" << post_section_;
+    ss << abi_section << "\n\n" << post_section_;
 
     std::string final_output = ss.str();
     fwrite(final_output.c_str(), 1, final_output.length(), prop_file.get());
@@ -213,7 +212,7 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
             continue;
         }
         ssize_t real_size;
-        if (msg_header.cmd >= Command::DAEMON64_SET_INFO &&
+        if (msg_header.cmd >= Command::DAEMON_SET_INFO &&
             msg_header.cmd != Command::SYSTEM_SERVER_STARTED) {
             if (static_cast<size_t>(nread) < sizeof(MsgHead)) {
                 LOGE("SocketHandler: received incomplete header for cmd %d, size %zd",
@@ -253,31 +252,16 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
         case EXIT:
             monitor_.request_exit();
             break;
-        case ZYGOTE64_INJECTED:
-            monitor_.get_abi_manager(true).notify_injected();
+        case ZYGOTE_INJECTED:
+            monitor_.get_abi_manager().notify_injected();
             monitor_.update_status();
             break;
-        case ZYGOTE32_INJECTED:
-            monitor_.get_abi_manager(false).notify_injected();
+        case DAEMON_SET_INFO:
+            monitor_.get_abi_manager().set_daemon_info({full_msg.data, (size_t) full_msg.length});
             monitor_.update_status();
             break;
-        case DAEMON64_SET_INFO:
-            monitor_.get_abi_manager(true).set_daemon_info(
-                {full_msg.data, (size_t) full_msg.length});
-            monitor_.update_status();
-            break;
-        case DAEMON32_SET_INFO:
-            monitor_.get_abi_manager(false).set_daemon_info(
-                {full_msg.data, (size_t) full_msg.length});
-            monitor_.update_status();
-            break;
-        case DAEMON64_SET_ERROR_INFO:
-            monitor_.get_abi_manager(true).set_daemon_crashed(
-                {full_msg.data, (size_t) full_msg.length});
-            monitor_.update_status();
-            break;
-        case DAEMON32_SET_ERROR_INFO:
-            monitor_.get_abi_manager(false).set_daemon_crashed(
+        case DAEMON_SET_ERROR_INFO:
+            monitor_.get_abi_manager().set_daemon_crashed(
                 {full_msg.data, (size_t) full_msg.length});
             monitor_.update_status();
             break;
@@ -386,8 +370,7 @@ void AppMonitor::SigChldHandler::handleChildEvent(int pid, int &status) {
         handleInitEvent(pid, status);
         return;
     }
-    if (monitor_.get_abi_manager(true).handle_daemon_exit_if_match(pid, status)) return;
-    if (monitor_.get_abi_manager(false).handle_daemon_exit_if_match(pid, status)) return;
+    if (monitor_.get_abi_manager().handle_daemon_exit_if_match(pid, status)) return;
     if (process_.count(pid)) {
         handleTracedProcess(pid, status);
     } else {
@@ -450,12 +433,8 @@ void AppMonitor::SigChldHandler::handleExecEvent(int pid, int &status) {
             LOGW("stop injecting %d because not tracing", pid);
             break;
         }
-        if (program == monitor_.get_abi_manager(true).program_path_) {
-            tracer = monitor_.get_abi_manager(true).check_and_prepare_injection();
-            if (tracer == nullptr) break;
-        }
-        if (program == monitor_.get_abi_manager(false).program_path_) {
-            tracer = monitor_.get_abi_manager(false).check_and_prepare_injection();
+        if (program == monitor_.get_abi_manager().program_path_) {
+            tracer = monitor_.get_abi_manager().check_and_prepare_injection();
             if (tracer == nullptr) break;
         }
         if (tracer != nullptr) {
