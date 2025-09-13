@@ -61,27 +61,6 @@ pub enum DaemonSocketAction {
     SystemServerStarted,
 }
 
-/// Represents the two types of mount namespaces the daemon manages.
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-#[repr(u8)]
-pub enum MountNamespace {
-    /// A "clean" namespace with all root-related mounts removed.
-    Clean,
-    /// The root namespace of the system, as seen by Zygote.
-    Root,
-}
-
-impl TryFrom<u8> for MountNamespace {
-    type Error = anyhow::Error;
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(MountNamespace::Clean),
-            1 => Ok(MountNamespace::Root),
-            _ => anyhow::bail!("Invalid MountNamespace value: {}", value),
-        }
-    }
-}
-
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct ProcessFlags: u32 {

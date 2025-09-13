@@ -371,7 +371,6 @@ void ZygiskContext::app_specialize_post() {
 void ZygiskContext::server_specialize_pre() {
     run_modules_pre();
     zygiskd::SystemServerStarted();
-    zygiskd::CacheMountNamespace(getpid());
 }
 
 void ZygiskContext::server_specialize_post() { run_modules_post(); }
@@ -408,6 +407,7 @@ void ZygiskContext::nativeForkSystemServer_pre() {
     fork_pre();
     if (is_child()) {
         server_specialize_pre();
+        zygiskd::CacheMountNamespace(getpid());
     }
     sanitize_fds();
 }
@@ -420,7 +420,7 @@ void ZygiskContext::nativeForkSystemServer_post() {
     fork_post();
 }
 
-static bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t info_flags) {
+bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t info_flags) {
     if (traces.size() == 0) {
         LOGV("abort unmounting zygote with an empty trace list");
         return true;
@@ -486,18 +486,19 @@ void ZygiskContext::nativeForkAndSpecialize_post() {
 // -----------------------------------------------------------------
 
 bool ZygiskContext::update_mount_namespace(zygiskd::MountNamespace namespace_type) {
+    LOGV("updating mount namespace to type %s",
+         namespace_type == zygiskd::MountNamespace::Clean ? "Clean" : "Root");
     std::string ns_path = zygiskd::UpdateMountNamespace(namespace_type);
     if (!ns_path.starts_with("/proc/")) {
-        PLOGE("update mount namespace [%s]", ns_path.data());
+        LOGE("invalid mount namespace path: %s", ns_path.data());
         return false;
     }
 
     auto updated_ns = open(ns_path.data(), O_RDONLY);
     if (updated_ns >= 0) {
-        LOGV("set mount namespace to [%s] fd=[%d]", ns_path.data(), updated_ns);
         setns(updated_ns, CLONE_NEWNS);
     } else {
-        PLOGE("open mount namespace [%s]", ns_path.data());
+        PLOGE("open mount namespace path [%s]", ns_path.data());
         return false;
     }
     close(updated_ns);
