@@ -10,10 +10,10 @@
 #include "utils.hpp"
 
 ZygoteAbiManager::ZygoteAbiManager(AppMonitor& monitor, bool is_64bit)
-    : program_path_(is_64bit ? "/system/bin/app_process64" : "/system/bin/app_process32"),
-      monitor_(monitor),
-      abi_name_(is_64bit ? "64" : "32"),
-      tracer_path_(is_64bit ? "./bin/zygisk-ptrace64" : "./bin/zygisk-ptrace32") {}
+    : abi_name_(is_64bit ? "64" : "32"),
+      program_path_(is_64bit ? "/system/bin/app_process64" : "/system/bin/app_process"),
+      tracer_path_(is_64bit ? "./bin/zygisk-ptrace64" : "./bin/zygisk-ptrace32"),
+      monitor_(monitor) {}
 
 const Status& ZygoteAbiManager::get_status() const { return status_; }
 

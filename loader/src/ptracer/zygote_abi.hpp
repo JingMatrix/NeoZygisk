@@ -34,15 +34,16 @@ public:
     void set_daemon_info(std::string_view info);
     void set_daemon_crashed(std::string_view error);
 
+    const char* const abi_name_;
     const std::string program_path_;
 
 private:
     bool is_in_crash_loop();
     bool ensure_daemon_created();
 
-    AppMonitor& monitor_;
     Status status_;
     StartCounter counter;
-    const char* const abi_name_;
+
     const char* const tracer_path_;
+    AppMonitor& monitor_;
 };
