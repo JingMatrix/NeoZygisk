@@ -1,22 +1,12 @@
-## 🚀 **v2.0 - Advanced Stealth & Clarity** 🚀
+## 🚀 v2.2 - Bug Fixes and Enhanced Compatibility 🚀
 
-This is a complete rewrite, focused on elegant evasion techniques and a more maintainable, clear architecture!
+This release squashes several bugs introduced in the v2.0 refactoring and streamlines performance.
 
-#### 🥷 **Advanced Evasion Techniques**
+### 🐛 Bug Fixes
 
-*   🛡️ **`atexit` Detection Neutralized**: Actively resets the global `atexit` handler array, erasing all module fingerprints.
-*   🧹 **Zygote Stack Cleaning**: Wipes root mount fossils from the Zygote stack to restore a pristine, non-root state.
-*   👻 **Direct Unmounting**: Aggressively unmounts traces from within Zygote before applications can inspect them.
-*   🧼 **Efficient Linker Cleaning**: Elegantly removes all library traces from memory using the `soinfo_unload` function.
-*   🧠 **Smarter Namespace Logic**: Refines mount logic to hide traces without creating new, detectable side-effects.
+*   **LSPosed Compatibility**: The `Zygisk` daemon now correctly cleans up all traces of LSPosed mounts. This regression was addressed in the hot-fix release v2.1.
+*   **Corrected Mount Logic**: Overhauled the logic for determining an application's mount namespace. This fixes a critical bug where system apps installed as modules (e.g., Basic Call Recorder) would fail to launch.
 
----
+### 💥 Breaking Change
 
-💡 **For Module Developers:**
-
-You no longer need to handle `atexit` evasion. NeoZygisk now completely neutralizes this detection vector for all loaded modules automatically! ✨
-
-#### 🔧 **Core Overhaul & Clarity**
-
-*   🏗️ **Total Rewrite**: Re-engineered the `Zygisk` daemon and `ptrace` monitor for maximum stability and clarity.
-*   ✨ **Modernized Internals**: Updated all core utilities for better performance, readability, and documentation.
+*   **Dropping 32-bit Support on 64-bit Devices** 🚮: To simplify the code and improve stability, NeoZygisk will no longer inject into 32-bit-only applications running on 64-bit devices. This change helps resolve compatibility issues on Android 10 and reflects the rarity of modern 32-bit-only apps.
