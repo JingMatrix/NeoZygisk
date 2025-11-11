@@ -15,6 +15,7 @@
 //! avoiding any repeated detection overhead.
 
 use crate::constants::{MAX_KSU_VERSION, MIN_KSU_VERSION};
+use log::warn;
 use std::ffi::c_char;
 use std::fs;
 use std::os::fd::RawFd;
@@ -142,9 +143,10 @@ pub fn detect_version() -> Option<Version> {
                 if version_code > 0 {
                     // Success! A valid version was returned via ioctl.
                     let method = Method::Ioctl(fd);
-                    if (MIN_KSU_VERSION..=MAX_KSU_VERSION).contains(&version_code)
-                        && Path::new("/data/adb/ksud").exists()
-                    {
+                    if MIN_KSU_VERSION <= version_code && Path::new("/data/adb/ksud").exists() {
+                        if version_code > MAX_KSU_VERSION {
+                            warn!("Support for current KernelSU (variant) could be incomplete")
+                        }
                         // Version is supported and ksud exists. Cache the result and finish.
                         return Some(DetectionResult {
                             method,
@@ -181,9 +183,10 @@ pub fn detect_version() -> Option<Version> {
             // Success with prctl. We must now probe for legacy capabilities.
             init_legacy_variant_probe();
             let method = Method::Prctl;
-            if (MIN_KSU_VERSION..=MAX_KSU_VERSION).contains(&version_code)
-                && Path::new("/data/adb/ksud").exists()
-            {
+            if MIN_KSU_VERSION <= version_code && Path::new("/data/adb/ksud").exists() {
+                if version_code > MAX_KSU_VERSION {
+                    warn!("Support for current KernelSU (variant) could be incomplete")
+                }
                 return Some(DetectionResult {
                     method,
                     version: Version::Supported,
