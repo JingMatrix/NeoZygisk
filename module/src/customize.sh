@@ -32,10 +32,9 @@ elif [ "$BOOTMODE" ] && [ "$KSU" ]; then
     abort    "*********************************************************"
   elif [ "$KSU_KERNEL_VER_CODE" -ge "$MAX_KSU_VERSION" ]; then
     ui_print "*********************************************************"
-    ui_print "! KernelSU version abnormal!"
-    ui_print "! Please integrate KernelSU into your kernel"
-    ui_print "  as submodule instead of copying the source code"
-    abort    "*********************************************************"
+    ui_print "! KernelSU version too large!"
+    ui_print "! Support for KernelSU (variant) could be incomplete"
+    ui_print "*********************************************************"
   fi
   if ! [ "$KSU_VER_CODE" ] || [ "$KSU_VER_CODE" -lt "$MIN_KSUD_VERSION" ]; then
     ui_print "*********************************************************"
