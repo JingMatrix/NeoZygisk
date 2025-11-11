@@ -229,8 +229,8 @@ std::vector<MountInfoEntry> parseMountInfo() {
         return entries;
     }
 
-    const std::vector<std::string> keywords = {"KSU", "/debug_ramdisk", "APATCH", "/data/adb",
-                                               "/adb/modules"};
+    const std::vector<std::string> keywords = {"KSU",       "/debug_ramdisk", "APATCH",
+                                               "/data/adb", "/adb/modules",   "/dev/block/loop"};
 
     std::string line;
     while (std::getline(mountinfo_file, line)) {
