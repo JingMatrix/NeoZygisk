@@ -42,9 +42,12 @@ val releaseFlags = arrayOf(
 
 android {
     buildFeatures {
-        androidResources = false
         buildConfig = false
         prefab = true
+    }
+
+    androidResources {
+        enable = false
     }
 
     externalNativeBuild.cmake {
