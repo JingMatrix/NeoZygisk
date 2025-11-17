@@ -45,7 +45,7 @@
  *     We then use `ptrace` to execute functions within the target process's context.
  *     - Remotely call `dlopen()` to load our library.
  *     - Remotely call `dlsym()` to find the address of our library's `entry` function.
- *     - Remotely call our `entry` function to initialize NeoZygisk.
+ *     - Remotely call our `entry` function to initialize ShamrockZygisk.
  * 5.  **Restore State**: After injection, restore all CPU registers, which allows the original
  *     entry point to be called when the process is fully resumed.
  *
@@ -245,7 +245,7 @@ bool inject_on_main(int pid, const char *lib_path) {
         LOGV("found injected library mapped from %p with total size %zu", start_addr, block_size);
 
         // Remotely call our entry(start_addr, block_size, path) function
-        LOGI("calling the injector's entry function to initialize NeoZygisk");
+        LOGI("calling the injector's entry function to initialize ShamrockZygisk");
         args.clear();
         args.push_back((uintptr_t) start_addr);
         args.push_back(block_size);
@@ -353,6 +353,6 @@ bool trace_zygote(int pid) {
         return false;
     }
 
-    LOGI("successfully detached from zygote, NeoZygisk should now be active");
+    LOGI("successfully detached from zygote, ShamrockZygisk should now be active");
     return true;
 }

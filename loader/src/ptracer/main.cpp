@@ -20,7 +20,7 @@ using namespace std::string_view_literals;
 
 // The main entry point for the monitoring process.
 void init_monitor() {
-    LOGI("NeoZygisk %s", ZKSU_VERSION);
+    LOGI("ShamrockZygisk %s", ZKSU_VERSION);
 
     // All logic is now encapsulated in an AppMonitor instance.
     AppMonitor monitor;
@@ -64,7 +64,7 @@ static int handle_ctl(int argc, char **argv);
 static int handle_version();
 
 /**
- * @brief Main entry point for the NeoZygisk command-line interface.
+ * @brief Main entry point for the ShamrockZygisk command-line interface.
  *
  * This function acts as a dispatcher, parsing the first command-line argument
  * to determine the desired mode of operation (e.g., monitor, trace, ctl)
@@ -102,7 +102,7 @@ int main(int argc, char **argv) {
  * @param tool_name The name of the executable, typically argv[0].
  */
 static void print_usage(const char *tool_name) {
-    fprintf(stderr, "NeoZygisk Tracer %s\n", ZKSU_VERSION);
+    fprintf(stderr, "ShamrockZygisk Tracer %s\n", ZKSU_VERSION);
     fprintf(stderr,
             "usage: %s monitor | trace <pid> [--restart] | ctl <start|stop|exit> | version\n",
             tool_name);
@@ -198,6 +198,6 @@ static int handle_ctl(int argc, char **argv) {
  * Prints the tool's version number to standard output.
  */
 static int handle_version() {
-    printf("NeoZygisk Tracer %s\n", ZKSU_VERSION);
+    printf("ShamrockZygisk Tracer %s\n", ZKSU_VERSION);
     return EXIT_SUCCESS;
 }

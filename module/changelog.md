@@ -9,4 +9,4 @@ This release squashes several bugs introduced in the v2.0 refactoring and stream
 
 ### 💥 Breaking Change
 
-*   **Dropping 32-bit Support on 64-bit Devices** 🚮: To simplify the code and improve stability, NeoZygisk will no longer inject into 32-bit-only applications running on 64-bit devices. This change helps resolve compatibility issues on Android 10 and reflects the rarity of modern 32-bit-only apps.
+*   **Dropping 32-bit Support on 64-bit Devices** 🚮: To simplify the code and improve stability, ShamrockZygisk will no longer inject into 32-bit-only applications running on 64-bit devices. This change helps resolve compatibility issues on Android 10 and reflects the rarity of modern 32-bit-only apps.

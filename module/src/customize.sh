@@ -19,7 +19,7 @@ if [ "$BOOTMODE" ] && [ "$APATCH" ]; then
   if [ "$(which magisk)" ]; then
     ui_print "*********************************************************"
     ui_print "! Multiple root implementation is NOT supported!"
-    ui_print "! Please uninstall Magisk before installing NeoZygisk"
+    ui_print "! Please uninstall Magisk before installing ShamrockZygisk"
     abort    "*********************************************************"
   fi
 elif [ "$BOOTMODE" ] && [ "$KSU" ]; then
@@ -45,7 +45,7 @@ elif [ "$BOOTMODE" ] && [ "$KSU" ]; then
   if [ "$(which magisk)" ]; then
     ui_print "*********************************************************"
     ui_print "! Multiple root implementation is NOT supported!"
-    ui_print "! Please uninstall Magisk before installing NeoZygisk"
+    ui_print "! Please uninstall Magisk before installing ShamrockZygisk"
     abort    "*********************************************************"
   fi
 elif [ "$BOOTMODE" ] && [ "$MAGISK_VER_CODE" ]; then
@@ -64,7 +64,7 @@ else
 fi
 
 VERSION=$(grep_prop version "${TMPDIR}/module.prop")
-ui_print "- Installing NeoZygisk $VERSION"
+ui_print "- Installing ShamrockZygisk $VERSION"
 
 # check android
 if [ "$API" -lt 26 ]; then

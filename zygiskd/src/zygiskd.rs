@@ -51,7 +51,7 @@ static DAEMON_SOCKET_PATH: OnceLock<String> = OnceLock::new();
 
 /// The main function for the zygiskd daemon.
 pub fn main() -> Result<()> {
-    info!("Welcome to NeoZygisk ({}) !", ZKSU_VERSION);
+    info!("Welcome to ShamrockZygisk ({}) !", ZKSU_VERSION);
 
     initialize_globals()?;
     let modules = load_modules()?;

@@ -1,6 +1,6 @@
 // src/mount.rs
 
-//! Manages Linux mount namespaces for the NeoZygisk daemon.
+//! Manages Linux mount namespaces for the ShamrockZygisk daemon.
 //!
 //! This module provides a unified API for caching, cleaning, and switching
 //! between different mount namespaces, which is crucial for isolating Zygisk

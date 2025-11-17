@@ -62,8 +62,8 @@ jobs:
         if: success()
         id: prepare_artifacts
         run: |
-          RELEASE_ZIP=$(find module/build/outputs/release -type f -name 'NeoZygisk-v*-release.zip')
-          DEBUG_ZIP=$(find module/build/outputs/release -type f -name 'NeoZygisk-v*-debug.zip')
+          RELEASE_ZIP=$(find module/build/outputs/release -type f -name 'ShamrockZygisk-v*-release.zip')
+          DEBUG_ZIP=$(find module/build/outputs/release -type f -name 'ShamrockZygisk-v*-debug.zip')
 
           RELEASE_NAME=$(basename "$RELEASE_ZIP" .zip)
           DEBUG_NAME=$(basename "$DEBUG_ZIP" .zip)

@@ -1,6 +1,6 @@
 // src/main.rs
 
-//! Main entry point for the NeoZygisk daemon and its companion processes.
+//! Main entry point for the ShamrockZygisk daemon and its companion processes.
 //!
 //! # Zygiskd Architecture Overview
 //!
@@ -106,7 +106,7 @@ fn start() {
             }
         }
         Some("version") => {
-            println!("NeoZygisk daemon {}", ZKSU_VERSION);
+            println!("ShamrockZygisk daemon {}", ZKSU_VERSION);
         }
         Some("root") => {
             root_impl::setup();

@@ -19,7 +19,7 @@ pub const MIN_KSU_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MIN_KSU_VERSION")))
 pub const MAX_KSU_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MAX_KSU_VERSION")));
 /// The minimum compatible version of Magisk.
 pub const MIN_MAGISK_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MIN_MAGISK_VERSION")));
-/// The version of the NeoZygisk daemon itself.
+/// The version of the ShamrockZygisk daemon itself.
 pub const ZKSU_VERSION: &str = env!("ZKSU_VERSION");
 
 // --- Configuration Constants ---
