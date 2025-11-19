@@ -1,6 +1,6 @@
 [package]
 name = "zygiskd"
-authors = ["JingMatrix"]
+authors = ["Setsura"]
 version = "1.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -18,7 +18,7 @@ passfd = "0.1"
 procfs = "0.18"
 proc-maps = "0.4"
 
-rustix = { git = "https://github.com/JingMatrix/rustix", branch = "main", features = [ "fs", "net", "pipe", "thread" ] }
+rustix = { git = "https://github.com/Setsura/rustix", branch = "main", features = [ "fs", "net", "pipe", "thread" ] }
 
 [profile.dev]
 strip = false
@@ -32,4 +32,4 @@ opt-level = "z"
 lto = true
 
 [patch.crates-io]
-rustix = { git = "https://github.com/JingMatrix/rustix", branch = "main" }
+rustix = { git = "https://github.com/Setsura/rustix", branch = "main" }

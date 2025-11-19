@@ -63,7 +63,7 @@ body:
     attributes:
       label: Version requirement/版本要求
       options:
-        - label: I am using the latest debug build from [GitHub Actions](https://github.com/JingMatrix/ShamrockZygisk/actions)./我正在使用 [GitHub Actions](https://github.com/JingMatrix/ShamrockZygisk/actions) 中最新的调试版本。
+        - label: I am using the latest debug build from [GitHub Actions](https://github.com/Setsura/ShamrockZygisk/actions)./我正在使用 [GitHub Actions](https://github.com/Setsura/ShamrockZygisk/actions) 中最新的调试版本。
           required: true
   - type: textarea
     attributes:
