@@ -21,3 +21,26 @@ if [ "$(which magisk)" ]; then
     fi
   done
 fi
+
+
+# Sync description from runtime prop
+(
+  # Wait for runtime prop
+  RUNTIME_PROP="/data/adb/neozygisk/module.prop"
+  count=0
+  while [ ! -f "$RUNTIME_PROP" ] && [ $count -lt 20 ]; do
+    sleep 0.5
+    count=$((count + 1))
+  done
+  
+  sleep 2
+
+  if [ -f "$RUNTIME_PROP" ]; then
+    # Extract description from runtime prop
+    DESC=$(grep "^description=" "$RUNTIME_PROP")
+    if [ ! -z "$DESC" ]; then
+       # Replace description in installed prop
+       sed -i "s|^description=.*|$DESC|" "$MODDIR/module.prop"
+    fi
+  fi
+) &

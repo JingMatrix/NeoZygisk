@@ -97,12 +97,38 @@ void AppMonitor::update_status() {
 
     // Build the full content in a single stringstream for clarity.
     std::stringstream ss;
-    ss << pre_section_ << "\n" << status_text << "\n";
+    
+    // Determine icons
+    std::string monitor_icon = (tracing_state_ == TRACING) ? "✅" : "❌";
+    
+    // For ABI status icon, rely on daemon_running and supported
+    auto d_status = zygote_.get_status();
+    bool abi_ok = d_status.supported && d_status.daemon_running && d_status.zygote_injected;
+    std::string abi_icon = abi_ok ? "✅" : "❌";
+
+    std::string abi_pretty = zygote_.abi_name_;
+    if (abi_pretty == "arm64" || abi_pretty == "x86_64") abi_pretty = "64-bit";
+    else if (abi_pretty == "armeabi-v7a" || abi_pretty == "x86") abi_pretty = "32-bit";
+
+    // Reconstruct description line
+    ss << pre_section_;
+    if (!pre_section_.empty() && pre_section_.back() != '\n') ss << "\n";
+    
+    // Generate description with [Status] prefix
+    // Only add newline if post_section is empty or doesn't start with newline (to avoid double spacing if original had one)
+    // Actually, simply construct the line:
+    ss << "description=[Monitor: " << monitor_icon << ", NeoZygisk " << abi_pretty << ": " << abi_icon << "] " << post_section_;
+    
+    // Ensure newline after description/post section if needed
+    if (!post_section_.empty() && post_section_.back() != '\n') ss << "\n";
+    else if (post_section_.empty()) ss << "\n"; 
+
+    ss << status_text << "\n";
 
     std::string abi_section;
     write_abi_status_section(abi_section, zygote_.get_status());
 
-    ss << abi_section << "\n" << post_section_;
+    ss << abi_section << "\n";
 
     std::string final_output = ss.str();
     fwrite(final_output.c_str(), 1, final_output.length(), prop_file.get());

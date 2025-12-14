@@ -18,11 +18,13 @@
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
+html,
 body {
     background-color: var(--bg-color);
     color: var(--text-primary);
     font-size: 14px;
     line-height: 1.5;
+    overscroll-behavior-y: none;
 }
 
 .app-container {
@@ -39,8 +41,8 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 4px;
-    margin-bottom: 12px;
+    padding: 12px 4px 4px 4px;
+    margin-bottom: 4px;
 }
 
 .header h1 {
@@ -58,10 +60,28 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 
-.icon-btn:hover {
-    background-color: rgba(0, 0, 0, 0.05);
+@media (hover: hover) {
+    .icon-btn:hover {
+        background-color: rgba(0, 0, 0, 0.05);
+    }
+
+    .dropdown-menu button:hover {
+        background-color: var(--bg-color);
+    }
+
+    .badge:hover {
+        opacity: 0.8;
+    }
+}
+
+.icon-btn:active {
+    background-color: rgba(0, 0, 0, 0.1);
+    transform: scale(0.9);
+    transition: transform 0.1s ease-out;
 }
 
 .icon-btn.small {
@@ -101,9 +121,12 @@ body {
     color: var(--text-primary);
 }
 
-.dropdown-menu button:hover {
-    background-color: var(--bg-color);
+
+
+.dropdown-menu button:active {
+    background-color: var(--border-color);
 }
+
 
 /* Cards */
 .card {
@@ -175,6 +198,16 @@ body {
     color: var(--text-primary);
     cursor: pointer;
     font-weight: 500;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+
+
+.badge:active {
+    transform: scale(0.92);
+    opacity: 0.7;
+    transition: transform 0.1s ease-out;
 }
 
 .badge.green {
@@ -339,54 +372,50 @@ input:checked+.slider:before {
     display: none !important;
 }
 
-/* Modal */
-.modal {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 2000;
-}
-
-.modal-content {
-    background: var(--card-bg);
-    border-radius: 16px;
-    padding: 20px;
-    width: 90%;
-    max-width: 400px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-}
-
-.modal-header {
+/* Module styling */
+#modules-link {
+    cursor: pointer;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 16px;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
 }
 
-.modal-header h2 {
-    font-size: 18px;
-    font-weight: 600;
-    margin: 0;
-}
-
-.modal-body ul {
+#modules-list {
     list-style: none;
     padding: 0;
+    overflow: hidden;
+    transition: all 0.3s ease-out;
 }
 
-.modal-body li {
-    padding: 8px 0;
+#modules-list.collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+    border-top: 1px solid transparent;
+}
+
+#modules-list.expanded {
+    max-height: 1000px;
+    opacity: 1;
+    margin-top: 12px;
+    border-top: 1px solid var(--border-color);
+}
+
+#modules-list li {
+    padding: 10px 0;
     border-bottom: 1px solid var(--border-color);
+    font-size: 13px;
+    color: var(--text-secondary);
 }
 
-.modal-body li:last-child {
+#modules-list li:last-child {
     border-bottom: none;
+}
+
+.rotate-180 {
+    transform: rotate(180deg) !important;
 }
 
 /* Dark Mode Support (Optional but good practice) */

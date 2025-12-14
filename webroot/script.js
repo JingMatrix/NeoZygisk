@@ -19,7 +19,8 @@ const translations = {
         exited: "Exited",
         unknown: "Unknown",
         not_injected: "Not Injected",
-        crashed: "Crashed"
+        crashed: "Crashed",
+        refreshed: "Refreshed"
     },
     zh: {
         basic_info: "基本信息",
@@ -39,7 +40,8 @@ const translations = {
         exited: "已退出",
         unknown: "未知",
         not_injected: "未注入",
-        crashed: "已崩溃"
+        crashed: "已崩溃",
+        refreshed: "已刷新"
     }
 };
 
@@ -49,8 +51,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const langOptions = document.querySelectorAll('.dropdown-menu button');
     const refreshBtn = document.getElementById('refresh-btn');
     const modulesLink = document.getElementById('modules-link');
-    const closeModalBtn = document.getElementById('close-modal-btn');
-    const modulesModal = document.getElementById('modules-modal');
 
     // Toggle dropdown
     langBtn.addEventListener('click', (e) => {
@@ -75,19 +75,29 @@ document.addEventListener('DOMContentLoaded', () => {
     if (refreshBtn) {
         refreshBtn.addEventListener('click', () => {
             fetchAndParseModuleProp();
+            showToast('refreshed');
         });
     }
 
-    // Modal logic
-    if (modulesLink && modulesModal) {
+    // Inline Expand Logic
+    if (modulesLink) {
         modulesLink.addEventListener('click', () => {
-            modulesModal.classList.remove('hidden');
-        });
-    }
+            const list = document.getElementById('modules-list');
+            const arrow = document.getElementById('modules-arrow');
 
-    if (closeModalBtn && modulesModal) {
-        closeModalBtn.addEventListener('click', () => {
-            modulesModal.classList.add('hidden');
+            if (list) {
+                if (list.classList.contains('collapsed')) {
+                    list.classList.remove('collapsed');
+                    list.classList.add('expanded');
+                } else {
+                    list.classList.remove('expanded');
+                    list.classList.add('collapsed');
+                }
+
+                if (arrow) {
+                    arrow.classList.toggle('rotate-180');
+                }
+            }
         });
     }
 
@@ -121,6 +131,24 @@ function setLanguage(lang) {
             innerSpan.textContent = text;
         }
     });
+}
+
+function showToast(messageKey) {
+    const toast = document.querySelector('.toast');
+    if (!toast) return;
+
+    const toastText = toast.querySelector('.toast-content span:last-child');
+    if (toastText) {
+        const message = translations[currentLang][messageKey] || messageKey;
+        toastText.textContent = message;
+    }
+
+    toast.classList.remove('hidden');
+
+    // Hide after 1 seconds
+    setTimeout(() => {
+        toast.classList.add('hidden');
+    }, 1000);
 }
 
 async function fetchAndParseModuleProp() {
