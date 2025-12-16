@@ -7,7 +7,7 @@
 #include <unistd.h>
 
 #include <csignal>
-#include <sstream>
+#include <cstring>
 
 #include "daemon.hpp"
 #include "files.hpp"
@@ -68,34 +68,118 @@ void AppMonitor::write_abi_status_section(std::string &status_text, const Status
     }
 }
 
-void AppMonitor::update_status() {
-    // Generate the full content first
-    std::stringstream ss;
+// Helper for atomic file writing with proper durability guarantees
+static bool atomic_write_file(const char *path, const std::string &content) {
+    std::string tmp_path = std::string(path) + ".tmp";
     
-    // Determine icons
-    std::string monitor_icon = (tracing_state_ == TRACING) ? "✅" : "❌";
+    // Use a lambda for cleanup on failure
+    auto cleanup_tmp = [&tmp_path]() {
+        unlink(tmp_path.c_str());
+    };
+
+    auto file = xopen_file(tmp_path.c_str(), "w");
+    if (!file) {
+        PLOGE("open %s", tmp_path.c_str());
+        return false;
+    }
+
+    if (fwrite(content.c_str(), 1, content.length(), file.get()) != content.length()) {
+        PLOGE("write %s", tmp_path.c_str());
+        file.reset();
+        cleanup_tmp();
+        return false;
+    }
+
+    if (fflush(file.get()) != 0) {
+        PLOGE("fflush %s", tmp_path.c_str());
+        file.reset();
+        cleanup_tmp();
+        return false;
+    }
+
+    if (fsync(fileno(file.get())) != 0) {
+        PLOGE("fsync %s", tmp_path.c_str());
+        file.reset();
+        cleanup_tmp();
+        return false;
+    }
+
+    // Close before rename to ensure all data is flushed and lock released
+    file.reset();
+
+    if (rename(tmp_path.c_str(), path) != 0) {
+        PLOGE("rename %s to %s", tmp_path.c_str(), path);
+        cleanup_tmp();
+        return false;
+    }
+
+    // Sync parent directory to ensure rename is durable across power loss
+    std::string dir_path(path);
+    auto last_slash = dir_path.rfind('/');
+    if (last_slash != std::string::npos) {
+        dir_path.resize(last_slash);
+        if (dir_path.empty()) dir_path = "/";
+    } else {
+        dir_path = ".";
+    }
+    
+    int dir_fd = open(dir_path.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dir_fd >= 0) {
+        fsync(dir_fd);
+        close(dir_fd);
+    }
+
+    return true;
+}
+
+void AppMonitor::update_status() {
+    // Build status text with pre-allocated buffer for efficiency
+    std::string status_text;
+    status_text.reserve(512);  // Pre-allocate to reduce reallocations
+
+    // Determine icons based on current state
+    const char* monitor_icon = (tracing_state_ == TRACING) ? "✅" : "❌";
     
     // For ABI status icon, rely on daemon_running and supported
-    auto d_status = zygote_.get_status();
+    const auto& d_status = zygote_.get_status();
     bool abi_ok = d_status.supported && d_status.daemon_running && d_status.zygote_injected;
-    std::string abi_icon = abi_ok ? "✅" : "❌";
+    const char* abi_icon = abi_ok ? "✅" : "❌";
 
-    std::string abi_pretty = zygote_.abi_name_;
-    if (abi_pretty == "arm64" || abi_pretty == "x86_64") abi_pretty = "64-bit";
-    else if (abi_pretty == "armeabi-v7a" || abi_pretty == "x86") abi_pretty = "32-bit";
+    // Map ABI name to user-friendly display
+    const char* abi_pretty;
+    if (strcmp(zygote_.abi_name_, "arm64") == 0 || strcmp(zygote_.abi_name_, "x86_64") == 0) {
+        abi_pretty = "64-bit";
+    } else if (strcmp(zygote_.abi_name_, "armeabi-v7a") == 0 || strcmp(zygote_.abi_name_, "x86") == 0) {
+        abi_pretty = "32-bit";
+    } else {
+        abi_pretty = zygote_.abi_name_;
+    }
 
-    // Reconstruct description line
-    ss << pre_section_;
-    if (!pre_section_.empty() && pre_section_.back() != '\n') ss << "\n";
+    // Build pre_section
+    status_text += pre_section_;
+    if (!pre_section_.empty() && pre_section_.back() != '\n') {
+        status_text += '\n';
+    }
     
-    ss << "description=[Monitor: " << monitor_icon << ", NeoZygisk " << abi_pretty << ": " << abi_icon << "] " << post_section_;
+    // Build description line
+    status_text += "description=[Monitor: ";
+    status_text += monitor_icon;
+    status_text += ", NeoZygisk ";
+    status_text += abi_pretty;
+    status_text += ": ";
+    status_text += abi_icon;
+    status_text += "] ";
+    status_text += post_section_;
     
-    // Ensure newline after description/post section if needed
-    if (!post_section_.empty() && post_section_.back() != '\n') ss << "\n";
-    else if (post_section_.empty()) ss << "\n"; 
+    // Ensure newline after description/post section
+    if (!post_section_.empty() && post_section_.back() != '\n') {
+        status_text += '\n';
+    } else if (post_section_.empty()) {
+        status_text += '\n';
+    }
 
-    // Build the middle section of the status text.
-    std::string status_text = "monitor_status=";
+    // Build monitor status section
+    status_text += "monitor_status=";
     switch (tracing_state_) {
     case TRACING:
         status_text += "tracing";
@@ -109,40 +193,43 @@ void AppMonitor::update_status() {
         status_text += "exited";
         break;
     }
+    
     if (tracing_state_ != TRACING && !monitor_stop_reason_.empty()) {
         status_text += "\nmonitor_stop_reason=";
         status_text += monitor_stop_reason_;
     }
+    status_text += '\n';
 
-    ss << status_text << "\n";
+    // Build ABI status section
+    write_abi_status_section(status_text, d_status);
+    status_text += '\n';
 
-    std::string abi_section;
-    write_abi_status_section(abi_section, zygote_.get_status());
+    // Skip writing if content hasn't changed (avoid redundant I/O)
+    if (status_text == last_written_status_) {
+        return;
+    }
+    last_written_status_ = status_text;
 
-    ss << abi_section << "\n";
-
-    std::string final_output = ss.str();
-
-    // Write to runtime prop
-    auto prop_file = xopen_file(prop_path_.c_str(), "w");
-    if (prop_file) {
-        fwrite(final_output.c_str(), 1, final_output.length(), prop_file.get());
-    } else {
-        PLOGE("open runtime module.prop");
+    // Write to runtime prop with atomic guarantee
+    if (!atomic_write_file(prop_path_.c_str(), status_text)) {
+        LOGE("Failed to write runtime module.prop: %s", prop_path_.c_str());
     }
 
-    // Write to installed module.prop (./module.prop)
-    auto installed_prop = xopen_file("./module.prop", "w");
-    if (installed_prop) {
-        fwrite(final_output.c_str(), 1, final_output.length(), installed_prop.get());
-    } else {
-        PLOGE("open installed module.prop");
+    // Write to installed module.prop (./module.prop) with atomic guarantee
+    if (!atomic_write_file("./module.prop", status_text)) {
+        LOGE("Failed to write installed module.prop: ./module.prop");
     }
 }
 
 bool AppMonitor::prepare_environment() {
     prop_path_ = zygiskd::GetTmpPath() + "/module.prop";
-    close(open(prop_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644));
+    int fd = open(prop_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        close(fd);
+    } else {
+        PLOGE("create runtime module.prop");
+    }
+
     auto orig_prop = xopen_file("./module.prop", "r");
     if (orig_prop == nullptr) {
         PLOGE("open original prop");
@@ -181,7 +268,7 @@ bool AppMonitor::prepare_environment() {
             if (post) return true;
 
             post = true;
-            std::string desc_val = line.substr(sizeof("description") - 1); // "description=" len 12
+            std::string desc_val = line.substr(12); // "description=" is exactly 12 chars
 
             // Clean up existing [Monitor: ...] prefix and any Garbage
             bool cleaning = true;
