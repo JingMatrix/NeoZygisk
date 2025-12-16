@@ -18,13 +18,11 @@
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-html,
 body {
     background-color: var(--bg-color);
     color: var(--text-primary);
     font-size: 14px;
     line-height: 1.5;
-    overscroll-behavior-y: none;
 }
 
 .app-container {
