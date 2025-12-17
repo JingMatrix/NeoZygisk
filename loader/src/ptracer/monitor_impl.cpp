@@ -133,10 +133,6 @@ static bool atomic_write_file(const char *path, const std::string &content) {
 }
 
 void AppMonitor::update_status() {
-    // Build status text with pre-allocated buffer for efficiency
-    std::string status_text;
-    status_text.reserve(512);  // Pre-allocate to reduce reallocations
-
     // Determine icons based on current state
     const char* monitor_icon = (tracing_state_ == TRACING) ? "✅" : "❌";
     
@@ -155,68 +151,79 @@ void AppMonitor::update_status() {
         abi_pretty = zygote_.abi_name_;
     }
 
+    // === Build runtime prop content (only description for /data/adb/neozygisk/module.prop) ===
+    std::string runtime_status;
+    runtime_status.reserve(256);
+    
     // Build pre_section
-    status_text += pre_section_;
+    runtime_status += pre_section_;
     if (!pre_section_.empty() && pre_section_.back() != '\n') {
-        status_text += '\n';
+        runtime_status += '\n';
     }
     
     // Build description line
-    status_text += "description=[Monitor: ";
-    status_text += monitor_icon;
-    status_text += ", NeoZygisk ";
-    status_text += abi_pretty;
-    status_text += ": ";
-    status_text += abi_icon;
-    status_text += "] ";
-    status_text += post_section_;
+    runtime_status += "description=[Monitor: ";
+    runtime_status += monitor_icon;
+    runtime_status += ", NeoZygisk ";
+    runtime_status += abi_pretty;
+    runtime_status += ": ";
+    runtime_status += abi_icon;
+    runtime_status += "] ";
+    runtime_status += post_section_;
     
     // Ensure newline after description/post section
     if (!post_section_.empty() && post_section_.back() != '\n') {
-        status_text += '\n';
+        runtime_status += '\n';
     } else if (post_section_.empty()) {
-        status_text += '\n';
+        runtime_status += '\n';
     }
 
-    // Build monitor status section
-    status_text += "monitor_status=";
+    // === Build installed module prop content (full status for /data/adb/modules/zygisksu/module.prop) ===
+    std::string installed_status;
+    installed_status.reserve(512);
+    
+    // Start with the same content as runtime
+    installed_status = runtime_status;
+
+    // Add monitor status section
+    installed_status += "monitor_status=";
     switch (tracing_state_) {
     case TRACING:
-        status_text += "tracing";
+        installed_status += "tracing";
         break;
     case STOPPING:
         [[fallthrough]];
     case STOPPED:
-        status_text += "stopped";
+        installed_status += "stopped";
         break;
     case EXITING:
-        status_text += "exited";
+        installed_status += "exited";
         break;
     }
     
     if (tracing_state_ != TRACING && !monitor_stop_reason_.empty()) {
-        status_text += "\nmonitor_stop_reason=";
-        status_text += monitor_stop_reason_;
+        installed_status += "\nmonitor_stop_reason=";
+        installed_status += monitor_stop_reason_;
     }
-    status_text += '\n';
+    installed_status += '\n';
 
-    // Build ABI status section
-    write_abi_status_section(status_text, d_status);
-    status_text += '\n';
+    // Add ABI status section
+    write_abi_status_section(installed_status, d_status);
+    installed_status += '\n';
 
     // Skip writing if content hasn't changed (avoid redundant I/O)
-    if (status_text == last_written_status_) {
+    if (installed_status == last_written_status_) {
         return;
     }
-    last_written_status_ = status_text;
+    last_written_status_ = installed_status;
 
-    // Write to runtime prop with atomic guarantee
-    if (!atomic_write_file(prop_path_.c_str(), status_text)) {
+    // Write to runtime prop (full status for /data/adb/neozygisk/module.prop) with atomic guarantee
+    if (!atomic_write_file(prop_path_.c_str(), installed_status)) {
         LOGE("Failed to write runtime module.prop: %s", prop_path_.c_str());
     }
 
-    // Write to installed module.prop (./module.prop) with atomic guarantee
-    if (!atomic_write_file("./module.prop", status_text)) {
+    // Write to installed module.prop (only description for /data/adb/modules/zygisksu/module.prop) with atomic guarantee
+    if (!atomic_write_file("./module.prop", runtime_status)) {
         LOGE("Failed to write installed module.prop: ./module.prop");
     }
 }
@@ -249,8 +256,6 @@ bool AppMonitor::prepare_environment() {
     };
 
     file_readline(false, orig_prop.get(), [&](std::string_view line_view) -> bool {
-        if (line_view.starts_with("updateJson=")) return true;
-
         std::string line(line_view);
         // Strip trailing line breaks so we can control spacing manually
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
