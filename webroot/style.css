@@ -28,7 +28,8 @@ body {
 .app-container {
     max-width: 600px;
     margin: 0 auto;
-    padding: 32px 16px 16px 16px;
+    padding: 16px 16px 16px 16px;
+    padding-top: max(12px, env(safe-area-inset-top));
     min-height: 100vh;
     display: flex;
     flex-direction: column;
@@ -39,8 +40,8 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 4px 4px 4px;
-    margin-bottom: 4px;
+    padding: 4px;
+    margin-bottom: 8px;
 }
 
 .header h1 {
