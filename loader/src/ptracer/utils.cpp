@@ -129,7 +129,14 @@ bool get_regs(int pid, struct user_regs_struct &regs) {
     struct iovec iov = {.iov_base = &regs, .iov_len = sizeof(regs)};
     if (ptrace(PTRACE_GETREGSET, pid, NT_PRSTATUS, &iov) == -1) {
         PLOGE("ptrace(PTRACE_GETREGSET)");
+#if defined(__arm__)
+        if (ptrace(PTRACE_GETREGS, pid, 0, &regs) == -1) {
+            PLOGE("fallback to PTRACE_GETREGS");
+            return false;
+        }
+#else
         return false;
+#endif
     }
 #endif
     return true;
@@ -145,7 +152,14 @@ bool set_regs(int pid, struct user_regs_struct &regs) {
     struct iovec iov = {.iov_base = &regs, .iov_len = sizeof(regs)};
     if (ptrace(PTRACE_SETREGSET, pid, NT_PRSTATUS, &iov) == -1) {
         PLOGE("ptrace(PTRACE_SETREGSET)");
+#if defined(__arm__)
+        if (ptrace(PTRACE_SETREGS, pid, 0, &regs) == -1) {
+            PLOGE("fallback to PTRACE_SETREGS");
+            return false;
+        }
+#else
         return false;
+#endif
     }
 #endif
     return true;
