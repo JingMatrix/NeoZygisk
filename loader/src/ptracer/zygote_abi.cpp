@@ -11,7 +11,7 @@
 
 ZygoteAbiManager::ZygoteAbiManager(AppMonitor& monitor, bool is_64bit)
     : abi_name_(is_64bit ? "64" : "32"),
-      program_path_(is_64bit ? "/system/bin/app_process64" : "/system/bin/app_process"),
+      program_path_(is_64bit ? "/system/bin/app_process64" : "/system/bin/app_process32"),
       tracer_path_(is_64bit ? "./bin/zygisk-ptrace64" : "./bin/zygisk-ptrace32"),
       monitor_(monitor) {}
 
