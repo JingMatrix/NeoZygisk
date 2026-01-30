@@ -269,7 +269,16 @@ fn create_library_fd(so_path: &Path) -> Result<OwnedFd> {
     seals.insert(memfd::FileSeal::SealGrow);
     seals.insert(memfd::FileSeal::SealWrite);
     seals.insert(memfd::FileSeal::SealSeal);
-    memfd.add_seals(&seals)?;
+
+    // Try to apply all seals (including SealWrite)
+    if let Err(e) = memfd.add_seals(&seals) {
+        // If SealWrite fails (likely EBUSY on older kernels), retry without it
+        warn!("Failed to add F_SEAL_WRITE, falling back to basic seals: {}", e);
+        
+        seals.remove(&memfd::FileSeal::SealWrite);
+        // Try adding the remaining seals; if this fails, we really have a problem.
+        memfd.add_seals(&seals)?;
+    }
 
     Ok(OwnedFd::from(memfd.into_file()))
 }
