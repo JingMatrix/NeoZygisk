@@ -294,8 +294,7 @@ bool trace_zygote(int pid) {
     LOGI("tracing PID %d from tracer PID %d", pid, getpid());
     // PTRACE_SEIZE is a modern and more robust way to attach than PTRACE_ATTACH.
     // - PTRACE_O_EXITKILL: Ensures the tracee is killed if the tracer exits.
-    // - PTRACE_O_TRACESECCOMP: Allows us to trace seccomp events if needed.
-    if (ptrace(PTRACE_SEIZE, pid, 0, PTRACE_O_EXITKILL | PTRACE_O_TRACESECCOMP) == -1) {
+    if (ptrace(PTRACE_SEIZE, pid, 0, PTRACE_O_EXITKILL) == -1) {
         PLOGE("ptrace(PTRACE_SEIZE) on PID %d", pid);
         return false;
     }
