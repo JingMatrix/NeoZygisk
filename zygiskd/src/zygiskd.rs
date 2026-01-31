@@ -269,7 +269,11 @@ fn create_library_fd(so_path: &Path) -> Result<OwnedFd> {
     seals.insert(memfd::FileSeal::SealGrow);
     seals.insert(memfd::FileSeal::SealWrite);
     seals.insert(memfd::FileSeal::SealSeal);
-    memfd.add_seals(&seals)?;
+
+    if let Err(e) = memfd.add_seals(&seals) {
+        // Ignore errors for the sake of compatibility
+        warn!("Failed to add seals : {}", e);
+    }
 
     Ok(OwnedFd::from(memfd.into_file()))
 }
