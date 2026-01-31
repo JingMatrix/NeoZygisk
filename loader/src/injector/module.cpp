@@ -430,7 +430,7 @@ bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t info_f
     std::string ns_path = zygiskd::UpdateMountNamespace(zygiskd::MountNamespace::Clean);
     if (!ns_path.starts_with("/proc/") || open(ns_path.data(), O_RDONLY) < 0 ) {
         PLOGE("open mount namespace path [%s], abort zygote unmount.", ns_path.data());
-        return false;
+        return true;
     }
 
     bool is_magisk = info_flags & PROCESS_ROOT_IS_MAGISK;
