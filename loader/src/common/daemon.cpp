@@ -67,18 +67,31 @@ void CacheMountNamespace(pid_t pid) {
     socket_utils::write_u32(fd, (uint32_t) pid);
 }
 
-std::string UpdateMountNamespace(MountNamespace type) {
+// Returns the file descriptor >= 0 on success, or -1 on failure.
+int UpdateMountNamespace(MountNamespace type) {
     UniqueFd fd = Connect(1);
     if (fd == -1) {
         PLOGE("UpdateMountNamespace");
-        return "socket not connected";
+        return -1;
     }
     socket_utils::write_u8(fd, (uint8_t) SocketAction::UpdateMountNamespace);
     socket_utils::write_u8(fd, (uint8_t) type);
-    uint32_t target_pid = socket_utils::read_u32(fd);
-    int target_fd = (int) socket_utils::read_u32(fd);
-    if (target_fd == 0) return "not cached yet";
-    return "/proc/" + std::to_string(target_pid) + "/fd/" + std::to_string(target_fd);
+
+    // Read Status Byte
+    uint8_t status = socket_utils::read_u8(fd);
+    // Handle Failure Case (Not Cached)
+    if (status == 0) {
+        // Daemon explicitly told us it doesn't have it.
+        return -1;
+    }
+    // Handle Success Case
+    int namespace_fd = socket_utils::recv_fd(fd);
+    if (namespace_fd < 0) {
+        PLOGE("UpdateMountNamespace: failed to receive fd");
+        return -1;
+    }
+
+    return namespace_fd;
 }
 
 std::vector<Module> ReadModules() {

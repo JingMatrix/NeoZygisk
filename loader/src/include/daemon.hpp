@@ -81,7 +81,7 @@ uint32_t GetProcessFlags(uid_t uid);
 
 void CacheMountNamespace(pid_t pid);
 
-std::string UpdateMountNamespace(MountNamespace type);
+int UpdateMountNamespace(MountNamespace type);
 
 int ConnectCompanion(size_t index);
 
