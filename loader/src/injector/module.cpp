@@ -425,6 +425,14 @@ bool abort_zygote_unmount(const std::vector<mount_info> &traces, uint32_t info_f
         LOGV("abort unmounting zygote with an empty trace list");
         return true;
     }
+
+    // Check namespace transfer from daemon
+    std::string ns_path = zygiskd::UpdateMountNamespace(zygiskd::MountNamespace::Clean);
+    if (!ns_path.starts_with("/proc/") || open(ns_path.data(), O_RDONLY) < 0 ) {
+        PLOGE("open mount namespace path [%s], abort zygote unmount.", ns_path.data());
+        return false;
+    }
+
     bool is_magisk = info_flags & PROCESS_ROOT_IS_MAGISK;
     for (const auto &trace : traces) {
         if (trace.target.rfind("/product", 0) == 0) {
