@@ -52,9 +52,13 @@ ssize_t xrecvmsg(int sockfd, struct msghdr* msg, int flags) {
 }
 
 void* recv_fds(int sockfd, char* cmsgbuf, size_t bufsz, int cnt) {
+    // Create a throwaway buffer.
+    // It must match the size Rust sends (sizeof(int) = 4 bytes).
+    int dummy_data;
+
     iovec iov = {
-        .iov_base = &cnt,
-        .iov_len = sizeof(cnt),
+        .iov_base = &dummy_data,
+        .iov_len = sizeof(dummy_data),
     };
     msghdr msg = {.msg_name = nullptr,
                   .msg_namelen = 0,
@@ -64,13 +68,17 @@ void* recv_fds(int sockfd, char* cmsgbuf, size_t bufsz, int cnt) {
                   .msg_controllen = bufsz,
                   .msg_flags = 0};
 
-    xrecvmsg(sockfd, &msg, MSG_WAITALL);
+    ssize_t rec = xrecvmsg(sockfd, &msg, MSG_WAITALL);
     cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
 
+    // Validate we received the 4 dummy bytes
+    if (rec != sizeof(dummy_data)) {
+        return nullptr;
+    }
+
     if (msg.msg_controllen != bufsz || cmsg == nullptr ||
-        // TODO: pass from rust: 20, expected: 16
-        // cmsg->cmsg_len != CMSG_LEN(sizeof(int) * cnt) ||
-        cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
+        cmsg->cmsg_len != CMSG_LEN(sizeof(int) * cnt) || cmsg->cmsg_level != SOL_SOCKET ||
+        cmsg->cmsg_type != SCM_RIGHTS) {
         return nullptr;
     }
 
