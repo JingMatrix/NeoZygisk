@@ -378,13 +378,16 @@ fn handle_get_process_flags(stream: &mut UnixStream) -> Result<()> {
 
 fn handle_update_mount_namespace(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
     let namespace_type = MountNamespace::try_from(stream.read_u8()?)?;
-    stream.write_u32(unsafe { libc::getpid() } as u32)?;
     if let Some(fd) = context.mount_manager.get_namespace_fd(namespace_type) {
         // Namespace is already cached, send the FD to the client.
-        stream.write_u32(fd as u32)?;
+        // SUCCESS: Send Status '1', then the FD.
+        stream.write_u8(1)?;
+        stream.send_fd(fd)?;
     } else {
-        error!("Namespace {:?} is not cached yet.", namespace_type);
-        stream.write_u32(0)?;
+        // FAILURE: Send Status '0'. 
+        // Do NOT send an FD or random u32 bytes, just stop here.
+        warn!("Namespace {:?} is not cached yet.", namespace_type);
+        stream.write_u8(0)?;
     }
     Ok(())
 }

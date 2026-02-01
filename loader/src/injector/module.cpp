@@ -486,21 +486,26 @@ void ZygiskContext::nativeForkAndSpecialize_post() {
 // -----------------------------------------------------------------
 
 bool ZygiskContext::update_mount_namespace(zygiskd::MountNamespace namespace_type) {
-    LOGV("updating mount namespace to type %s",
-         namespace_type == zygiskd::MountNamespace::Clean ? "Clean" : "Root");
-    std::string ns_path = zygiskd::UpdateMountNamespace(namespace_type);
-    if (!ns_path.starts_with("/proc/")) {
-        LOGE("invalid mount namespace path: %s", ns_path.data());
+    const char* type_str = (namespace_type == zygiskd::MountNamespace::Clean ? "Clean" : "Root");
+    LOGV("updating mount namespace to type %s", type_str);
+
+    int ns_fd = zygiskd::UpdateMountNamespace(namespace_type);
+
+    // Check for failure (Not cached or error)
+    if (ns_fd < 0) {
+        LOGW("mount namespace [%s] not available/cached", type_str);
         return false;
     }
 
-    auto updated_ns = open(ns_path.data(), O_RDONLY);
-    if (updated_ns >= 0) {
-        setns(updated_ns, CLONE_NEWNS);
-    } else {
-        PLOGE("open mount namespace path [%s]", ns_path.data());
+    // Apply the namespace
+    // setns works directly with the FD received from the socket.
+    int ret = setns(ns_fd, CLONE_NEWNS);
+    if (ret != 0) {
+        PLOGE("setns failed for type %s", type_str);
+        close(ns_fd);
         return false;
     }
-    close(updated_ns);
+
+    close(ns_fd);
     return true;
 }
