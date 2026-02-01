@@ -69,19 +69,41 @@ void* recv_fds(int sockfd, char* cmsgbuf, size_t bufsz, int cnt) {
                   .msg_flags = 0};
 
     ssize_t rec = xrecvmsg(sockfd, &msg, MSG_WAITALL);
+
+    // --- IO Failed or Stream Desync ---
+    if (rec != sizeof(dummy_data)) {
+        PLOGE("recv_fds: IO failure. Read %zd bytes, expected %zu", rec, sizeof(dummy_data));
+    }
+
     cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
 
-    // Validate we received the 4 dummy bytes
-    if (rec != sizeof(dummy_data)) {
+    // --- No headers received ---
+    if (cmsg == nullptr) {
+        LOGE("recv_fds: No control headers received. msg_controllen=%zu",
+             (size_t) msg.msg_controllen);
         return nullptr;
     }
 
-    if (msg.msg_controllen != bufsz || cmsg == nullptr ||
-        cmsg->cmsg_len != CMSG_LEN(sizeof(int) * cnt) || cmsg->cmsg_level != SOL_SOCKET ||
-        cmsg->cmsg_type != SCM_RIGHTS) {
-        return nullptr;
+    // Check msg_controllen <= bufsz
+    if (msg.msg_controllen != bufsz) {
+        LOGW("recv_fds: Size mismatch. Buffer capacity: %zu, Received len: %zu", bufsz,
+             (size_t) msg.msg_controllen);
     }
 
+    // Check Header Length Field
+    size_t expected_cmsg_len = CMSG_LEN(sizeof(int) * cnt);
+    if (cmsg->cmsg_len != expected_cmsg_len) {
+        LOGW("recv_fds: CMSG header len mismatch. Header says: %zu, Calculated: %zu (cnt=%d)",
+             (size_t) cmsg->cmsg_len, expected_cmsg_len, cnt);
+    }
+
+    // Check Protocol details
+    if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
+        LOGW("recv_fds: Protocol mismatch. Level: %d (exp %d), Type: %d (exp %d)", cmsg->cmsg_level,
+             SOL_SOCKET, cmsg->cmsg_type, SCM_RIGHTS);
+    }
+
+    // Return data anyway so we can see if the FD is valid
     return CMSG_DATA(cmsg);
 }
 
