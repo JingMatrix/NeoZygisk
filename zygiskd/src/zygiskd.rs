@@ -166,6 +166,37 @@ fn initialize_globals() -> Result<()> {
     Ok(())
 }
 
+/// Gets the kernel version by executing `uname -r`.
+fn get_kernel_version() -> String {
+    Command::new("/system/bin/uname")
+        .arg("-r")
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
+/// Gets the Android SDK version.
+fn get_device_sdk() -> String {
+    utils::get_property("ro.build.version.sdk")
+        .unwrap_or_else(|_| "Unknown".to_string())
+}
+
+/// Gets the device ABI with architecture suffix.
+fn get_device_abi() -> String {
+    let abi = utils::get_property("ro.product.cpu.abi")
+        .unwrap_or_else(|_| "Unknown".to_string());
+    let arch = std::env::consts::ARCH;
+    format!("{} ({})", abi, arch)
+}
+
 /// Sends initial status information to the controller.
 fn send_startup_info(modules: &[Module]) -> Result<()> {
     let mut msg = Vec::<u8>::new();
@@ -175,20 +206,19 @@ fn send_startup_info(modules: &[Module]) -> Result<()> {
         | root_impl::RootImpl::Magisk => {
             msg.extend_from_slice(&constants::DAEMON_SET_INFO.to_le_bytes());
             let module_names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
-            if !module_names.is_empty() {
-                format!(
-                    "\t\tRoot: {:?}\n\t\tModules ({}):\n\t\t\t{}",
-                    root_impl::get(),
-                    modules.len(),
-                    module_names.join("\n\t\t\t")
-                )
-            } else {
-                format!("\t\tRoot: {:?}", root_impl::get())
-            }
+            format!(
+                "root_implementation={:?}\nmodules_count={}\nmodules_list={}\ndevice_kernel={}\ndevice_sdk={}\ndevice_abi={}",
+                root_impl::get(),
+                modules.len(),
+                module_names.join(","),
+                get_kernel_version(),
+                get_device_sdk(),
+                get_device_abi()
+            )
         }
         _ => {
             msg.extend_from_slice(&constants::DAEMON_SET_ERROR_INFO.to_le_bytes());
-            format!("\t\tInvalid root implementation: {:?}", root_impl::get())
+            format!("root_implementation=Invalid({:?})", root_impl::get())
         }
     };
     msg.extend_from_slice(&(info.len() as u32 + 1).to_le_bytes());

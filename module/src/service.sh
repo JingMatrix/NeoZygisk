@@ -21,3 +21,6 @@ if [ "$(which magisk)" ]; then
     fi
   done
 fi
+
+
+
