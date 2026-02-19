@@ -397,6 +397,10 @@ void ZygiskContext::nativeForkSystemServer_pre() {
     for (auto &map : g_hook->cached_map_infos) {
         if (map.dev == 0 && map.inode == 0 && map.offset == 0 && map.is_private &&
             map.path == "[anon:stack_and_tls:main]") {
+            if ((map.perms & PROT_READ) == 0) {
+                LOGV("Skipping non-readable stack map at %p", reinterpret_cast<void *>(map.start));
+                continue;
+            }
             auto search_from = reinterpret_cast<char *>(map.start);
             auto search_to = reinterpret_cast<char *>(map.end);
             spoof_zygote_fossil(search_from, search_to, "ref_profiles");
@@ -486,7 +490,7 @@ void ZygiskContext::nativeForkAndSpecialize_post() {
 // -----------------------------------------------------------------
 
 bool ZygiskContext::update_mount_namespace(zygiskd::MountNamespace namespace_type) {
-    const char* type_str = (namespace_type == zygiskd::MountNamespace::Clean ? "Clean" : "Root");
+    const char *type_str = (namespace_type == zygiskd::MountNamespace::Clean ? "Clean" : "Root");
     LOGV("updating mount namespace to type %s", type_str);
 
     int ns_fd = zygiskd::UpdateMountNamespace(namespace_type);
