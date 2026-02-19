@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zygisk Next WebUI</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="header">
+            <h1>NeoZygisk</h1>
+            <div class="language-selector">
+                <button id="lang-btn" class="icon-btn" aria-label="Change Language">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="2" y1="12" x2="22" y2="12"></line>
+                        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z">
+                        </path>
+                    </svg>
+                </button>
+                <div id="lang-dropdown" class="dropdown-menu hidden">
+                    <button data-lang="en">English</button>
+                    <button data-lang="zh">Chinese</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="content">
+            <div class="card">
+                <h2 data-i18n="basic_info">Basic Information</h2>
+                <div class="info-item">
+                    <label id="prop-name">NeoZygisk</label>
+                    <div class="value" id="prop-version">_</div>
+                </div>
+                <div class="info-item">
+                    <label data-i18n="kernel">Kernel</label>
+                    <div class="value" id="device-kernel">_</div>
+                </div>
+                <div class="info-item">
+                    <label>Android SDK</label>
+                    <div class="value" id="device-sdk">_</div>
+                </div>
+                <div class="info-item">
+                    <label>ABI</label>
+                    <div class="value" id="device-abi">_</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2 data-i18n="dashboard">Dashboard</h2>
+                    <div class="actions">
+                        <button id="refresh-btn" class="icon-btn small" aria-label="Refresh">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M23 4v6h-6"></path>
+                                <path d="M1 20v-6h6"></path>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="status-row">
+                    <span data-i18n="root_impl">Root implementation</span>
+                    <span class="badge green">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                        <span id="val-root">_</span>
+                    </span>
+                </div>
+                <div class="status-row">
+                    <span data-i18n="zygote_monitor">Zygote Monitor</span>
+                    <span class="badge green">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                        <span data-i18n="running" id="val-monitor">_</span>
+                    </span>
+                </div>
+                <div class="status-row">
+                    <span id="status-zygote-label">zygote</span>
+                    <span class="badge green">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                        <span data-i18n="injected" id="val-zygote">_</span>
+                    </span>
+                </div>
+                <div class="status-row">
+                    <span id="status-daemon-label">daemon</span>
+                    <span class="badge green">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                        <span data-i18n="running" id="val-daemon">_</span>
+                    </span>
+                </div>
+
+                <div class="module-list-link" id="modules-link">
+                    <div>
+                        <span data-i18n="modules">Modules</span> (<span id="val-modules-count">_</span>)
+                    </div>
+                    <svg id="modules-arrow" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                        style="transition: transform 0.3s ease;">
+                        <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                </div>
+                <ul id="modules-list" class="collapsed"></ul>
+            </div>
+        </main>
+    </div>
+
+    <div class="toast hidden">
+        <div class="toast-content">
+            <span class="toast-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+            </span>
+            <span>Refreshed</span>
+        </div>
+    </div>
+
+    <script type="module" src="script.js"></script>
+</body>
+
+</html>

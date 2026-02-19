@@ -105,7 +105,6 @@ if [ "$KSU" ]; then
 fi
 
 ui_print "- Extracting module files"
-extract "$ZIPFILE" 'action.sh'     "$MODPATH"
 extract "$ZIPFILE" 'module.prop'     "$MODPATH"
 extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'service.sh'      "$MODPATH"
@@ -116,7 +115,11 @@ mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 mkdir "$MODPATH/bin"
 mkdir "$MODPATH/lib"
 mkdir "$MODPATH/lib64"
+mkdir "$MODPATH/webroot"
 mv "$MODPATH/zygisk-ctl.sh" "$MODPATH/bin/zygisk-ctl"
+
+ui_print "- Extracting WebUI files"
+unzip -o "$ZIPFILE" "webroot/*" -x "*.sha256" -d "$MODPATH"
 
 if [ "$ARCH" = "x86" ]; then
   ui_print "- Extracting x86 libraries"

@@ -7,7 +7,7 @@
 #include <unistd.h>
 
 #include <csignal>
-#include <sstream>
+#include <cstring>
 
 #include "daemon.hpp"
 #include "files.hpp"
@@ -38,96 +38,282 @@ void AppMonitor::set_tracing_state(TracingState state) { tracing_state_ = state;
 void AppMonitor::write_abi_status_section(std::string &status_text, const Status &daemon_status) {
     auto abi_name = this->zygote_.abi_name_;
     if (daemon_status.supported) {
-        status_text += "\tzygote";
+        status_text += "zygote_";
         status_text += abi_name;
-        status_text += ":";
+        status_text += "_status=";
         if (tracing_state_ != TRACING)
-            status_text += "\t❓ unknown";
+            status_text += "unknown";
         else if (daemon_status.zygote_injected)
-            status_text += "\t😋 injected";
+            status_text += "injected";
         else
-            status_text += "\t❌ not injected";
-        status_text += "\n\tdaemon";
+            status_text += "not_injected";
+        status_text += "\ndaemon_";
         status_text += abi_name;
-        status_text += ":";
+        status_text += "_status=";
         if (daemon_status.daemon_running) {
-            status_text += "\t😋 running";
+            status_text += "running";
             if (!daemon_status.daemon_info.empty()) {
                 status_text += "\n";
                 status_text += daemon_status.daemon_info;
             }
         } else {
-            status_text += "\t❌ crashed";
+            status_text += "crashed";
             if (!daemon_status.daemon_error_info.empty()) {
-                status_text += "(";
+                status_text += "\ndaemon_";
+                status_text += abi_name;
+                status_text += "_error=";
                 status_text += daemon_status.daemon_error_info;
-                status_text += ")";
             }
         }
     }
 }
 
-void AppMonitor::update_status() {
-    auto prop_file = xopen_file(prop_path_.c_str(), "w");
-    if (!prop_file) {
-        PLOGE("open module.prop");
-        return;
+// Helper for atomic file writing with proper durability guarantees
+static bool atomic_write_file(const char *path, const std::string &content) {
+    std::string tmp_path = std::string(path) + ".tmp";
+    
+    // Use a lambda for cleanup on failure
+    auto cleanup_tmp = [&tmp_path]() {
+        unlink(tmp_path.c_str());
+    };
+
+    auto file = xopen_file(tmp_path.c_str(), "w");
+    if (!file) {
+        PLOGE("open %s", tmp_path.c_str());
+        return false;
     }
 
-    // Build the middle section of the status text.
-    std::string status_text = "\tmonitor: \t";
+    if (fwrite(content.c_str(), 1, content.length(), file.get()) != content.length()) {
+        PLOGE("write %s", tmp_path.c_str());
+        file.reset();
+        cleanup_tmp();
+        return false;
+    }
+
+    if (fflush(file.get()) != 0) {
+        PLOGE("fflush %s", tmp_path.c_str());
+        file.reset();
+        cleanup_tmp();
+        return false;
+    }
+
+    if (fsync(fileno(file.get())) != 0) {
+        PLOGE("fsync %s", tmp_path.c_str());
+        file.reset();
+        cleanup_tmp();
+        return false;
+    }
+
+    // Close before rename to ensure all data is flushed and lock released
+    file.reset();
+
+    if (rename(tmp_path.c_str(), path) != 0) {
+        PLOGE("rename %s to %s", tmp_path.c_str(), path);
+        cleanup_tmp();
+        return false;
+    }
+
+    // Sync parent directory to ensure rename is durable across power loss
+    std::string dir_path(path);
+    auto last_slash = dir_path.rfind('/');
+    if (last_slash != std::string::npos) {
+        dir_path.resize(last_slash);
+        if (dir_path.empty()) dir_path = "/";
+    } else {
+        dir_path = ".";
+    }
+    
+    int dir_fd = open(dir_path.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dir_fd >= 0) {
+        fsync(dir_fd);
+        close(dir_fd);
+    }
+
+    return true;
+}
+
+void AppMonitor::update_status() {
+    // Determine icons based on current state
+    const char* monitor_icon = (tracing_state_ == TRACING) ? "\xE2\x9C\x85" : "\xE2\x9D\x8C";
+    
+    // For ABI status icon, rely on daemon_running and supported
+    const auto& d_status = zygote_.get_status();
+    bool abi_ok = d_status.supported && d_status.daemon_running && d_status.zygote_injected;
+    const char* abi_icon = abi_ok ? "\xE2\x9C\x85" : "\xE2\x9D\x8C";
+
+    // Map ABI name to user-friendly display
+    const char* abi_pretty;
+    if (strcmp(zygote_.abi_name_, "64") == 0) {
+        abi_pretty = "64-bit";
+    } else if (strcmp(zygote_.abi_name_, "32") == 0) {
+        abi_pretty = "32-bit";
+    } else {
+        abi_pretty = zygote_.abi_name_;
+    }
+
+    // === Build runtime prop content (only description for /data/adb/neozygisk/module.prop) ===
+    std::string runtime_status;
+    runtime_status.reserve(256);
+    
+    // Build pre_section
+    runtime_status += pre_section_;
+    if (!pre_section_.empty() && pre_section_.back() != '\n') {
+        runtime_status += '\n';
+    }
+    
+    // Build description line
+    runtime_status += "description=[Monitor: ";
+    runtime_status += monitor_icon;
+    runtime_status += ", NeoZygisk ";
+    runtime_status += abi_pretty;
+    runtime_status += ": ";
+    runtime_status += abi_icon;
+    runtime_status += "] ";
+    runtime_status += post_section_;
+    
+    // Ensure newline after description/post section
+    if (!post_section_.empty() && post_section_.back() != '\n') {
+        runtime_status += '\n';
+    } else if (post_section_.empty()) {
+        runtime_status += '\n';
+    }
+
+    // === Build installed module prop content (full status for /data/adb/modules/zygisksu/module.prop) ===
+    std::string installed_status;
+    installed_status.reserve(512);
+    
+    // Start with the same content as runtime
+    installed_status = runtime_status;
+
+    // Add monitor status section
+    installed_status += "monitor_status=";
     switch (tracing_state_) {
     case TRACING:
-        status_text += "😋 tracing";
+        installed_status += "tracing";
         break;
     case STOPPING:
         [[fallthrough]];
     case STOPPED:
-        status_text += "❌ stopped";
+        installed_status += "stopped";
         break;
     case EXITING:
-        status_text += "❌ exited";
+        installed_status += "exited";
         break;
     }
+    
     if (tracing_state_ != TRACING && !monitor_stop_reason_.empty()) {
-        status_text += "(";
-        status_text += monitor_stop_reason_;
-        status_text += ")";
+        installed_status += "\nmonitor_stop_reason=";
+        installed_status += monitor_stop_reason_;
+    }
+    installed_status += '\n';
+
+    // Add ABI status section
+    write_abi_status_section(installed_status, d_status);
+    installed_status += '\n';
+
+    // Skip writing if content hasn't changed (avoid redundant I/O)
+    if (installed_status == last_written_status_) {
+        return;
+    }
+    last_written_status_ = installed_status;
+
+    // Write to runtime prop (full status for /data/adb/neozygisk/module.prop) with atomic guarantee
+    if (!atomic_write_file(prop_path_.c_str(), installed_status)) {
+        LOGE("Failed to write runtime module.prop: %s", prop_path_.c_str());
     }
 
-    // Build the full content in a single stringstream for clarity.
-    std::stringstream ss;
-    ss << pre_section_ << "\n" << status_text << "\n\n";
-
-    std::string abi_section;
-    write_abi_status_section(abi_section, zygote_.get_status());
-
-    ss << abi_section << "\n\n" << post_section_;
-
-    std::string final_output = ss.str();
-    fwrite(final_output.c_str(), 1, final_output.length(), prop_file.get());
+    // Write to installed module.prop (only description for /data/adb/modules/zygisksu/module.prop) with atomic guarantee
+    if (!atomic_write_file("./module.prop", runtime_status)) {
+        LOGE("Failed to write installed module.prop: ./module.prop");
+    }
 }
 
 bool AppMonitor::prepare_environment() {
     prop_path_ = zygiskd::GetTmpPath() + "/module.prop";
-    close(open(prop_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644));
+    int fd = open(prop_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        close(fd);
+    } else {
+        PLOGE("create runtime module.prop");
+    }
+
     auto orig_prop = xopen_file("./module.prop", "r");
     if (orig_prop == nullptr) {
         PLOGE("open original prop");
         return false;
     }
+
+    pre_section_ = "";
+    post_section_ = "";
     bool post = false;
-    file_readline(false, orig_prop.get(), [&](std::string_view line) -> bool {
-        if (line.starts_with("updateJson=")) return true;
+
+    // Keys generated by update_status that we must drop + other dynamic keys
+    auto is_generated_key = [](std::string_view line) {
+        return line.starts_with("monitor_status=") ||
+               line.starts_with("monitor_stop_reason=") ||
+               line.starts_with("zygote_") ||
+               line.starts_with("daemon_");
+    };
+
+    file_readline(false, orig_prop.get(), [&](std::string_view line_view) -> bool {
+        std::string line(line_view);
+        // Strip trailing line breaks so we can control spacing manually
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+            line.pop_back();
+        }
+        
+        // Skip blank/empty lines to prevent gap growth
+        if (line.find_first_not_of(" \t") == std::string::npos) return true;
+
+        // Skip previously generated status lines
+        if (is_generated_key(line)) return true;
+
         if (line.starts_with("description=")) {
+            // Only capture the first description found. Ignore subsequent ones (duplicates).
+            if (post) return true;
+
             post = true;
-            post_section_ += line.substr(sizeof("description"));
+            std::string desc_val = line.substr(12); // "description=" is exactly 12 chars
+
+            // Clean up existing [Monitor: ...] prefix and any Garbage
+            bool cleaning = true;
+            while (cleaning) {
+                cleaning = false;
+                // Strip [Monitor: ...]
+                if (desc_val.starts_with("[Monitor:")) {
+                    auto closing_bracket = desc_val.find(']');
+                    if (closing_bracket != std::string::npos) {
+                        desc_val = desc_val.substr(closing_bracket + 1);
+                        cleaning = true;
+                    }
+                }
+                
+                // Strip leading garbage like =, space, tab
+                if (!desc_val.empty()) {
+                    size_t first_valid = desc_val.find_first_not_of("= \t");
+                    if (first_valid == std::string::npos) {
+                        desc_val = ""; // string is all garbage
+                    } else if (first_valid > 0) {
+                        desc_val = desc_val.substr(first_valid);
+                        cleaning = true; // potentially exposed another [Monitor:]
+                    }
+                }
+            }
+
+            if (!post_section_.empty()) post_section_ += "\n";
+            post_section_ += desc_val;
         } else {
-            (post ? post_section_ : pre_section_) += "\t";
-            (post ? post_section_ : pre_section_) += line;
+            if (post) {
+                if (!post_section_.empty()) post_section_ += "\n";
+                post_section_ += line;
+            } else {
+                if (!pre_section_.empty()) pre_section_ += "\n";
+                pre_section_ += line;
+            }
         }
         return true;
     });
+
     update_status();
     return true;
 }
