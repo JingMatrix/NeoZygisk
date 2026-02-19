@@ -442,15 +442,20 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
             monitor_.get_abi_manager().notify_injected();
             monitor_.update_status();
             break;
-        case DAEMON_SET_INFO:
-            monitor_.get_abi_manager().set_daemon_info({full_msg.data, (size_t) full_msg.length});
+        case DAEMON_SET_INFO: {
+            size_t info_len = static_cast<size_t>(full_msg.length);
+            while (info_len > 0 && full_msg.data[info_len - 1] == '\0') info_len--;
+            monitor_.get_abi_manager().set_daemon_info({full_msg.data, info_len});
             monitor_.update_status();
             break;
-        case DAEMON_SET_ERROR_INFO:
-            monitor_.get_abi_manager().set_daemon_crashed(
-                {full_msg.data, (size_t) full_msg.length});
+        }
+        case DAEMON_SET_ERROR_INFO: {
+            size_t error_len = static_cast<size_t>(full_msg.length);
+            while (error_len > 0 && full_msg.data[error_len - 1] == '\0') error_len--;
+            monitor_.get_abi_manager().set_daemon_crashed({full_msg.data, error_len});
             monitor_.update_status();
             break;
+        }
         case SYSTEM_SERVER_STARTED:
             LOGV("system server started, module.prop updated");
             break;

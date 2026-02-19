@@ -4,8 +4,6 @@ const translations = {
     en: {
         basic_info: "Basic Information",
         kernel: "Kernel",
-        author: "Author",
-        description: "Description",
         dashboard: "Dashboard",
         root_impl: "Root implementation",
         zygote_monitor: "Zygote Monitor",
@@ -20,28 +18,37 @@ const translations = {
         not_injected: "Not Injected",
         crashed: "Crashed",
         refreshed: "Refreshed",
+        load_failed: "Failed to load module.prop",
     },
     zh: {
-        basic_info: "\u57fa\u672c\u4fe1\u606f",
-        kernel: "\u5185\u6838",
-        author: "\u4f5c\u8005",
-        description: "\u63cf\u8ff0",
-        dashboard: "\u4eea\u8868\u677f",
-        root_impl: "Root \u5b9e\u73b0",
-        zygote_monitor: "Zygote \u76d1\u89c6\u5668",
-        running: "\u8fd0\u884c\u4e2d",
-        injected: "\u5df2\u6ce8\u5165",
-        modules: "\u6a21\u5757",
-        modules_list: "\u8fd0\u884c\u4e2d\u7684\u6a21\u5757",
-        tracing: "\u8ffd\u8e2a\u4e2d",
-        stopped: "\u5df2\u505c\u6b62",
-        exited: "\u5df2\u9000\u51fa",
-        unknown: "\u672a\u77e5",
-        not_injected: "\u672a\u6ce8\u5165",
-        crashed: "\u5df2\u5d29\u6e83",
-        refreshed: "\u5df2\u5237\u65b0",
+        basic_info: "基本信息",
+        kernel: "内核",
+        dashboard: "仪表板",
+        root_impl: "Root 实现",
+        zygote_monitor: "Zygote 监视器",
+        running: "运行中",
+        injected: "已注入",
+        modules: "模块",
+        modules_list: "运行中的模块",
+        tracing: "追踪中",
+        stopped: "已停止",
+        exited: "已退出",
+        unknown: "未知",
+        not_injected: "未注入",
+        crashed: "已崩溃",
+        refreshed: "已刷新",
+        load_failed: "读取 module.prop 失败",
     },
 };
+
+const STATUS_ICON_BY_LEVEL = {
+    positive: "icon-status-check",
+    negative: "icon-status-x",
+    neutral: "icon-status-unknown",
+};
+
+const POSITIVE_STATUSES = new Set(["running", "injected", "tracing"]);
+const NEGATIVE_STATUSES = new Set(["crashed", "not_injected", "stopped", "exited"]);
 
 let currentLang = "en";
 let toastTimer = null;
@@ -52,6 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const langOptions = document.querySelectorAll(".dropdown-menu button");
     const refreshBtn = document.getElementById("refresh-btn");
     const modulesLink = document.getElementById("modules-link");
+    const modulesList = document.getElementById("modules-list");
 
     if (langBtn && langDropdown) {
         langBtn.addEventListener("click", (event) => {
@@ -69,26 +77,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (refreshBtn) {
         refreshBtn.addEventListener("click", () => {
-            fetchAndParseModuleProp();
-            showToast("refreshed");
+            fetchAndParseModuleProp(true);
         });
     }
 
-    if (modulesLink) {
+    if (modulesLink && modulesList) {
         modulesLink.addEventListener("click", () => {
-            const list = document.getElementById("modules-list");
             const arrow = document.getElementById("modules-arrow");
-            if (!list) return;
-
-            list.classList.toggle("collapsed");
-            list.classList.toggle("expanded");
+            if (modulesList.classList.contains("collapsed")) {
+                expandModulesList(modulesList);
+            } else {
+                collapseModulesList(modulesList);
+            }
             if (arrow) arrow.classList.toggle("rotate-180");
+        });
+
+        window.addEventListener("resize", () => {
+            syncModulesListHeight(modulesList);
         });
     }
 
     const userLang = navigator.language.startsWith("zh") ? "zh" : "en";
     setLanguage(userLang);
-    fetchAndParseModuleProp();
+    fetchAndParseModuleProp(false);
 });
 
 function setLanguage(lang) {
@@ -111,30 +122,43 @@ function t(key) {
     return translations[currentLang]?.[key] || translations.en[key] || key || "";
 }
 
-function showToast(messageKey) {
+function showToast(messageKey, type = "success") {
     const toast = document.querySelector(".toast");
     if (!toast) return;
 
     const text = toast.querySelector(".toast-content span:last-child");
     if (text) text.textContent = t(messageKey);
 
-    toast.classList.remove("hidden");
+    toast.classList.remove("hidden", "success", "error");
+    toast.classList.add(type === "error" ? "error" : "success");
+
+    const toastUse = document.querySelector("#toast-symbol use");
+    if (toastUse) {
+        setUseHref(toastUse, type === "error" ? STATUS_ICON_BY_LEVEL.negative : STATUS_ICON_BY_LEVEL.positive);
+    }
+
     if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toast.classList.add("hidden"), 1000);
+    toastTimer = setTimeout(() => {
+        toast.classList.add("hidden");
+    }, type === "error" ? 1600 : 1000);
 }
 
-async function fetchAndParseModuleProp() {
+async function fetchAndParseModuleProp(showResultToast = false) {
     try {
         const result = await exec("cat /data/adb/neozygisk/module.prop");
         if (result.errno === 0 && result.stdout) {
             parseModuleProp(result.stdout);
-        } else {
-            console.error("Failed to read module.prop:", result.stderr);
-            updateText("prop-name", "NeoZygisk (Load Failed)");
+            if (showResultToast) showToast("refreshed", "success");
+            return;
         }
+
+        console.error("Failed to read module.prop:", result.stderr);
+        updateText("prop-name", "NeoZygisk (Load Failed)");
+        showToast("load_failed", "error");
     } catch (error) {
         console.error("Exec failed:", error);
         updateText("prop-name", "NeoZygisk (Error)");
+        showToast("load_failed", "error");
     }
 }
 
@@ -239,12 +263,40 @@ function renderModules(modules) {
         item.textContent = moduleName;
         modulesList.appendChild(item);
     });
+
+    syncModulesListHeight(modulesList);
+}
+
+function expandModulesList(list) {
+    list.classList.remove("collapsed");
+    list.classList.add("expanded");
+    list.style.maxHeight = `${list.scrollHeight}px`;
+}
+
+function collapseModulesList(list) {
+    list.style.maxHeight = `${list.scrollHeight}px`;
+    requestAnimationFrame(() => {
+        list.style.maxHeight = "0px";
+    });
+    list.classList.remove("expanded");
+    list.classList.add("collapsed");
+}
+
+function syncModulesListHeight(list) {
+    if (list.classList.contains("expanded")) {
+        list.style.maxHeight = `${list.scrollHeight}px`;
+    } else {
+        list.style.maxHeight = "0px";
+    }
 }
 
 function updateText(id, value) {
     if (!isDefined(value)) return;
     const element = document.getElementById(id);
-    if (element) element.textContent = String(value);
+    if (element) {
+        const sanitized = String(value).replace(/[\u0000\uFFFD]+$/g, "");
+        element.textContent = sanitized;
+    }
 }
 
 function isDefined(value) {
@@ -257,31 +309,29 @@ function updateStatusBadge(elementId, statusKey) {
 
     element.textContent = t(statusKey);
 
-    const iconCheck = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M22 11.08V12a10 10 0 1 1-5.93-9.14\"></path><polyline points=\"22 4 12 14.01 9 11.01\"></polyline></svg>";
-    const iconError = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"></circle><line x1=\"15\" y1=\"9\" x2=\"9\" y2=\"15\"></line><line x1=\"9\" y1=\"9\" x2=\"15\" y2=\"15\"></line></svg>";
-    const iconUnknown = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"></circle><line x1=\"12\" y1=\"8\" x2=\"12\" y2=\"12\"></line><line x1=\"12\" y1=\"16\" x2=\"12.01\" y2=\"16\"></line></svg>";
-
     const badge = element.parentElement;
     if (!badge || !badge.classList.contains("badge")) return;
 
     badge.setAttribute("data-status", statusKey);
     badge.classList.remove("green", "red", "gray");
 
-    let iconElement = badge.querySelector("svg");
-    if (!iconElement) {
-        const placeholder = document.createElement("span");
-        badge.insertBefore(placeholder, badge.firstChild);
-        iconElement = placeholder;
-    }
+    const statusLevel = getStatusLevel(statusKey);
+    if (statusLevel === "positive") badge.classList.add("green");
+    if (statusLevel === "negative") badge.classList.add("red");
+    if (statusLevel === "neutral") badge.classList.add("gray");
 
-    if (["running", "injected", "tracing"].includes(statusKey)) {
-        badge.classList.add("green");
-        if (iconElement.outerHTML !== iconCheck) iconElement.outerHTML = iconCheck;
-    } else if (["crashed", "not_injected", "stopped", "exited"].includes(statusKey)) {
-        badge.classList.add("red");
-        if (iconElement.outerHTML !== iconError) iconElement.outerHTML = iconError;
-    } else {
-        badge.classList.add("gray");
-        if (iconElement.outerHTML !== iconUnknown) iconElement.outerHTML = iconUnknown;
-    }
+    const useElement = badge.querySelector(".badge-icon use");
+    if (useElement) setUseHref(useElement, STATUS_ICON_BY_LEVEL[statusLevel]);
+}
+
+function getStatusLevel(statusKey) {
+    if (POSITIVE_STATUSES.has(statusKey)) return "positive";
+    if (NEGATIVE_STATUSES.has(statusKey)) return "negative";
+    return "neutral";
+}
+
+function setUseHref(useElement, symbolId) {
+    const reference = `#${symbolId}`;
+    useElement.setAttribute("href", reference);
+    useElement.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", reference);
 }

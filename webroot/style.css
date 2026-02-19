@@ -4,11 +4,7 @@
     --text-primary: #1f1f1f;
     --text-secondary: #757575;
     --accent-color: #00c853;
-    /* Green for badges */
-    --accent-bg: #e8f5e9;
     --border-color: #e0e0e0;
-    --switch-on: #10b981;
-    --switch-off: #e0e0e0;
 }
 
 * {
@@ -28,14 +24,52 @@ body {
 .app-container {
     max-width: 600px;
     margin: 0 auto;
-    padding: 16px 16px 16px 16px;
+    padding: 16px;
     padding-top: max(12px, env(safe-area-inset-top));
     min-height: 100vh;
     display: flex;
     flex-direction: column;
 }
 
-/* Header */
+.icon-sprite {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+}
+
+.icon {
+    display: block;
+    width: 1em;
+    height: 1em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.icon-24 {
+    width: 24px;
+    height: 24px;
+}
+
+.icon-18 {
+    width: 18px;
+    height: 18px;
+}
+
+.icon-16 {
+    width: 16px;
+    height: 16px;
+}
+
+.icon-14 {
+    width: 14px;
+    height: 14px;
+    stroke-width: 3;
+}
+
 .header {
     display: flex;
     justify-content: space-between;
@@ -63,6 +97,10 @@ body {
     -webkit-tap-highlight-color: transparent;
 }
 
+.icon-btn.small {
+    padding: 4px;
+}
+
 @media (hover: hover) {
     .icon-btn:hover {
         background-color: rgba(0, 0, 0, 0.05);
@@ -83,11 +121,6 @@ body {
     transition: transform 0.1s ease-out;
 }
 
-.icon-btn.small {
-    padding: 4px;
-}
-
-/* Language Dropdown */
 .language-selector {
     position: relative;
 }
@@ -120,14 +153,10 @@ body {
     color: var(--text-primary);
 }
 
-
-
 .dropdown-menu button:active {
     background-color: var(--border-color);
 }
 
-
-/* Cards */
 .card {
     background: var(--card-bg);
     border-radius: 16px;
@@ -159,7 +188,6 @@ body {
     gap: 8px;
 }
 
-/* Info Items */
 .info-item {
     margin-bottom: 16px;
 }
@@ -181,7 +209,6 @@ body {
     word-break: break-all;
 }
 
-/* Dashboard Items */
 .status-row {
     display: flex;
     justify-content: space-between;
@@ -201,7 +228,9 @@ body {
     -webkit-tap-highlight-color: transparent;
 }
 
-
+.badge-icon {
+    flex-shrink: 0;
+}
 
 .badge:active {
     transform: scale(0.92);
@@ -221,106 +250,12 @@ body {
     color: var(--text-secondary);
 }
 
-/* Settings Items */
-.setting-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px 0;
-}
-
-.select-input {
-    padding: 6px 12px;
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
-    background: var(--bg-color);
-    font-size: 13px;
-    outline: none;
-}
-
-/* Switch */
-.switch {
-    position: relative;
-    display: inline-block;
-    width: 44px;
-    height: 24px;
-}
-
-.switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-}
-
-.slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: var(--switch-off);
-    transition: .4s;
-}
-
-.slider:before {
-    position: absolute;
-    content: "";
-    height: 18px;
-    width: 18px;
-    left: 3px;
-    bottom: 3px;
-    background-color: white;
-    transition: .4s;
-}
-
-input:checked+.slider {
-    background-color: var(--switch-on);
-}
-
-input:checked+.slider:before {
-    transform: translateX(20px);
-}
-
-.slider.round {
-    border-radius: 24px;
-}
-
-.slider.round:before {
-    border-radius: 50%;
-}
-
-/* Footer */
-.footer {
-    display: flex;
-    justify-content: center;
-    gap: 24px;
-    padding: 24px 0;
-    margin-top: auto;
-}
-
-.footer-link {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-secondary);
-    text-decoration: none;
-    font-size: 13px;
-    font-weight: 500;
-}
-
-.footer-link:hover {
-    color: var(--text-primary);
-}
-
-/* Toast */
 .toast {
     position: fixed;
     bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
     background: #fce4ec;
-    /* Pinkish bg from screenshot */
     color: #c2185b;
     padding: 12px 20px;
     border-radius: 30px;
@@ -333,6 +268,11 @@ input:checked+.slider:before {
     display: none;
 }
 
+.toast.error {
+    background: #ffebee;
+    color: #b71c1c;
+}
+
 .toast-content {
     display: flex;
     align-items: center;
@@ -343,7 +283,6 @@ input:checked+.slider:before {
 
 .toast-icon {
     background: #009688;
-    /* Teal icon bg */
     color: white;
     border-radius: 50%;
     width: 24px;
@@ -352,6 +291,10 @@ input:checked+.slider:before {
     align-items: center;
     justify-content: center;
     padding: 4px;
+}
+
+.toast.error .toast-icon {
+    background: #d32f2f;
 }
 
 @keyframes slideUp {
@@ -366,12 +309,10 @@ input:checked+.slider:before {
     }
 }
 
-/* Generic Hidden Class */
 .hidden {
     display: none !important;
 }
 
-/* Module styling */
 #modules-link {
     cursor: pointer;
     display: flex;
@@ -385,7 +326,15 @@ input:checked+.slider:before {
     list-style: none;
     padding: 0;
     overflow: hidden;
-    transition: all 0.3s ease-out;
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+    border-top: 1px solid transparent;
+    transition:
+        max-height 0.3s ease-out,
+        opacity 0.3s ease-out,
+        margin-top 0.3s ease-out,
+        border-color 0.3s ease-out;
 }
 
 #modules-list.collapsed {
@@ -396,7 +345,6 @@ input:checked+.slider:before {
 }
 
 #modules-list.expanded {
-    max-height: 1000px;
     opacity: 1;
     margin-top: 12px;
     border-top: 1px solid var(--border-color);
@@ -417,7 +365,6 @@ input:checked+.slider:before {
     transform: rotate(180deg) !important;
 }
 
-/* Dark Mode Support (Optional but good practice) */
 @media (prefers-color-scheme: dark) {
     :root {
         --bg-color: #121212;
@@ -425,12 +372,5 @@ input:checked+.slider:before {
         --text-primary: #e0e0e0;
         --text-secondary: #a0a0a0;
         --border-color: #333;
-        --switch-off: #424242;
-    }
-
-    .select-input {
-        background: #2c2c2c;
-        color: white;
-        border-color: #444;
     }
 }
