@@ -39,7 +39,7 @@ void spoof_virtual_maps(const char *path, bool clear_write_permission) {
         if (strstr(map.path.c_str(), path)) {
             LOGV("spoofing entry path contaning string %s", map.path.c_str());
             // Create an anonymous mapping to hold a copy of the original data
-            void *copy = mmap(nullptr, size, PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+            void *copy = mmap(nullptr, size, PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
             if (copy == MAP_FAILED) {
                 LOGE("failed to backup block %s [%p, %p]", map.path.c_str(), addr,
                      (void *) map.end);
@@ -71,8 +71,8 @@ void spoof_virtual_maps(const char *path, bool clear_write_permission) {
                 PLOGE("remove write permission from %s [%p, %p]", map.path.c_str(), addr,
                       (void *) map.end);
             } else {
-                LOGV("write permission removed from %s [%p, %p]", map.path.c_str(),
-                     addr, (void *) map.end);
+                LOGV("write permission removed from %s [%p, %p]", map.path.c_str(), addr,
+                     (void *) map.end);
             }
         }
     }

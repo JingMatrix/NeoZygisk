@@ -157,7 +157,7 @@ DCL_HOOK_FUNC(static int, pthread_attr_setstacksize, void *target, size_t size) 
             size_t block_size = g_hook->block_size;
 
             if (g_hook->should_spoof_maps) {
-                spoof_virtual_maps("jit-cache-zygisk", true);
+                spoof_virtual_maps("zygisk-module", true);
             }
 
             delete g_hook;
