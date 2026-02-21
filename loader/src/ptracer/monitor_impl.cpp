@@ -403,13 +403,25 @@ void AppMonitor::SigChldHandler::handleParentEvent(int pid, int &status) {
         return;
     }
 
-    // Resume the parent process
+    // Resume the parent process and handle standard POSIX signals
     if (WIFSTOPPED(status)) {
-        // Logic to suppress signal injection into Init/Stubs if necessary
         if (WPTEVENT(status) == 0) {
             int sig = WSTOPSIG(status);
-            if (sig != SIGSTOP && sig != SIGTSTP && sig != SIGTTIN && sig != SIGTTOU) {
-                // Pass signals through
+
+            if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
+                LOGW("suppress stopping signal sent to parent %d: %s %d", pid, sigabbrev_np(sig),
+                     sig);
+                ptrace(PTRACE_CONT, pid, 0, 0);
+                return;
+            }
+            else if (pid != 1 && sig == SIGCHLD) {
+                LOGI("suppressing SIGCHLD and detaching from stub process %d", pid);
+                // ptrace detach with data=0 restarts the process but drops the pending signal
+                ptrace(PTRACE_DETACH, pid, 0, 0);
+                stub_processes_.erase(pid);
+                return;
+            } else {
+                LOGW("inject signal sent to parent %d: %s %d", pid, sigabbrev_np(sig), sig);
                 ptrace(PTRACE_CONT, pid, 0, sig);
                 return;
             }
