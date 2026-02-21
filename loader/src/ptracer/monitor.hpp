@@ -153,15 +153,18 @@ private:
 
     private:
         void handleChildEvent(int pid, int &status);
-        void handleInitEvent(int pid, int &status);
+        void handleParentEvent(int pid, int &status);
         void handleNewProcess(int pid);
         void handleTracedProcess(int pid, int &status);
-        void handleExecEvent(int pid, int &status);
+
+        // returns true if process was promoted/injected, false if it should be detached
+        bool handleExecEvent(int pid, int &status);
 
         AppMonitor &monitor_;
         int signal_fd_ = -1;
         int status_ = 0;
         std::set<pid_t> process_;
+        std::set<pid_t> stub_processes_;
     };
 
     void set_tracing_state(TracingState state);

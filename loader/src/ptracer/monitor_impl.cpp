@@ -297,50 +297,49 @@ bool AppMonitor::SigChldHandler::Init() {
 }
 
 /**
- * @brief The central event handler for all ptrace and child process events.
+ * @brief The central dispatcher for process state changes and signal handling.
  *
- * This function is the heart of the monitoring logic. It is woken up by the
- * EventLoop whenever a SIGCHLD signal is received, indicating a state change
- * in one of init's descendants. Its primary responsibility is to determine what
- * happened and dispatch the event to the correct handler logic.
+ * This method is the primary entry point for the monitoring logic.
+ * It is invoked by the `EventLoop` when the underlying `signalfd` becomes readable,
+ * indicating that the kernel has delivered one or more `SIGCHLD` signals.
  *
- * The function enters a `while` loop to reap all pending child process state
- * changes reported by the kernel. For each reaped process (`pid`), it follows
- * a strict, ordered decision tree to determine the nature of the event.
+ * Its responsibility is to consume the signal notification, reap all pending process
+ * events using `waitpid`, and dispatch them according to the new hierarchical architecture.
  *
- * @section Event Processing Flow
+ * @section Architecture: Hierarchical Monitoring
  *
- * For each PID returned by `waitpid()`, the following checks are performed in order:
+ * To support complex boot chains (e.g., `init -> stub -> zygote`), this handler implements
+ * a recursive monitoring strategy rather than a flat list. It categorizes processes into
+ * four distinct roles and processes them in strict priority order:
  *
- * 1.  **Is the PID `init` (pid == 1)?**
- *     - **Why:** This handles events directly affecting the `init` process itself.
- *       These are typically `PTRACE_EVENT_FORK` notifications (when `init` forks
- *       a new direct child) or `PTRACE_EVENT_STOP` (which confirms that our
- *       `PTRACE_INTERRUPT` command for a graceful stop has been received).
- *     - **Action:** If it matches, the event is passed to `handleInitEvent()`, and
- *       processing for this PID concludes.
+ * 1.  Process Factories (Init & Stubs)
+ *     - Criteria: PID is `1` (init) OR present in `stub_processes_`.
+ *     - Role: These are parent nodes in the process tree.
+ *     - Action: Delegated to `handleParentEvent()`. We monitor these processes
+ *       primarily for `PTRACE_EVENT_FORK` to discover new children (potential Zygotes)
+ *       or, in the case of stubs, for their termination.
  *
- * 2.  **Is the PID a known helper daemon?**
- *     - **Why:** The monitor spawns and tracks the PIDs of its `zygiskd64` and
- *       `zygiskd32` helper daemons. This check quickly determines if one of them
- *       has crashed or exited unexpectedly.
- *     - **Action:** If it's a daemon PID, `handle_daemon_exit_if_match()` is called
- *       to update the status, and processing for this PID concludes.
+ * 2.  Helper Daemons
+ *     - Criteria: PID matches a known `zygiskd` instance.
+ *     - Role: Self-monitoring mechanism.
+ *     - Action: Checks if the daemon has crashed or exited unexpectedly and
+ *       updates the global status accordingly.
  *
- * 3.  **Is the PID a process we are actively tracing?**
- *     - **Why:** The monitor maintains a `process_` set containing the PIDs of
- *       newly forked children that it is specifically watching for an `execve` call.
- *       This check differentiates between a brand new process and one that is in
- *       the middle of our interception workflow.
- *     - **Action (if YES):** The event is passed to `handleTracedProcess()`. This
- *       function confirms the event is the `PTRACE_EVENT_EXEC` we were waiting for
- *       and then calls `handleExecEvent()` to perform the core injection logic.
- *       Afterward, the PID is removed from the `process_` set.
- *     - **Action (if NO):** This means the PID is a new child of `init` that we have
- *       never seen before. The event is passed to `handleNewProcess()`, which attaches
- *       `ptrace` with the `PTRACE_O_TRACEEXEC` option. This crucial step tells the
- *       kernel to stop the child and notify us again just before it executes a new
- *       program. The PID is then added to the `process_` set for tracking.
+ * 3.  Transitioning Candidates
+ *     - Criteria: PID is present in the `process_` set.
+ *     - Role: These are newly forked children whose identity is not yet established.
+ *       They are being traced while waiting for an `execve` syscall.
+ *     - Action: Delegated to `handleTracedProcess()`. This determines if the
+ *       process has become a Zygote (triggering injection), an intermediate Stub
+ *       (triggering promotion to a Process Factory), or an irrelevant process
+ *       (triggering detachment).
+ *
+ * 4.  New Discoveries
+ *     - Criteria: PID is unknown.
+ *     - Role: Unexpected or previously unobserved children of a monitored parent.
+ *     - Action: Delegated to `handleNewProcess()`. The monitor attaches via
+ *       `ptrace` with `PTRACE_O_TRACEEXEC` and adds the PID to the candidate set
+ *       (`process_`) to await its biological identity.
  */
 void AppMonitor::SigChldHandler::HandleEvent(EventLoop &, uint32_t) {
     for (;;) {
@@ -365,12 +364,29 @@ void AppMonitor::SigChldHandler::HandleEvent(EventLoop &, uint32_t) {
     }
 }
 
+/**
+ * @brief The primary dispatcher for child process state changes.
+ *
+ * This function routes signals caught by waitpid() to the appropriate specialized
+ * handler based on the process's current role in our monitoring hierarchy.
+ */
 void AppMonitor::SigChldHandler::handleChildEvent(int pid, int &status) {
-    if (pid == 1) {
-        handleInitEvent(pid, status);
+    // Role 1: Process Factories (Init and Stub Zygotes)
+    // These processes are monitored for PTRACE_EVENT_FORK to discover new children.
+    if (pid == 1 || stub_processes_.count(pid)) {
+        handleParentEvent(pid, status);
         return;
     }
-    if (monitor_.get_abi_manager().handle_daemon_exit_if_match(pid, status)) return;
+
+    // Role 2: Helper Daemons
+    // Check if this is one of our own zygiskd daemon instances exiting.
+    if (monitor_.get_abi_manager().handle_daemon_exit_if_match(pid, status)) {
+        return;
+    }
+
+    // Role 3 & 4: Transitioning Candidates and New Discoveries
+    // If the process is known to be in the pre-exec stage, evaluate its state.
+    // Otherwise, treat it as a newly discovered process.
     if (process_.count(pid)) {
         handleTracedProcess(pid, status);
     } else {
@@ -378,87 +394,218 @@ void AppMonitor::SigChldHandler::handleChildEvent(int pid, int &status) {
     }
 }
 
-void AppMonitor::SigChldHandler::handleInitEvent(int pid, int &status) {
+/**
+ * @brief Handles events for parent processes (Init and Stub Zygotes).
+ *
+ * This handler manages the discovery of new processes via fork() and acts as a
+ * shield to protect fragile parent processes (like stub_zygote) from kernel
+ * signals generated by our ptrace manipulation of their children.
+ */
+void AppMonitor::SigChldHandler::handleParentEvent(int pid, int &status) {
+    // Case 1: The parent successfully forked a new child.
     if (stopped_with(status, SIGTRAP, PTRACE_EVENT_FORK)) {
         long child_pid;
-        ptrace(PTRACE_GETEVENTMSG, pid, 0, &child_pid);
-        LOGV("init forked %ld", child_pid);
-    } else if (stopped_with(status, SIGTRAP, PTRACE_EVENT_STOP) &&
-               monitor_.get_tracing_state() == STOPPING) {
-        if (ptrace(PTRACE_DETACH, 1, 0, 0) == -1) PLOGE("detach init");
+        if (ptrace(PTRACE_GETEVENTMSG, pid, 0, &child_pid) != -1) {
+            LOGV("parent %d forked %ld", pid, child_pid);
+        } else {
+            PLOGE("geteventmsg on parent %d", pid);
+        }
+    }
+    // Case 2: Init has paused in response to our PTRACE_INTERRUPT stop request.
+    else if (pid == 1 && stopped_with(status, SIGTRAP, PTRACE_EVENT_STOP) &&
+             monitor_.get_tracing_state() == STOPPING) {
+        LOGI("init process safely paused, detaching");
+        if (ptrace(PTRACE_DETACH, 1, 0, 0) == -1) PLOGE("detach init failed");
         monitor_.notify_init_detached();
         return;
     }
+    // Case 3: An intermediate stub process died naturally or crashed.
+    else if (pid != 1 && (WIFEXITED(status) || WIFSIGNALED(status))) {
+        LOGI("stub process %d exited (status: %d)", pid, status);
+        stub_processes_.erase(pid);
+        return;
+    }
+
+    // Case 4: The parent was stopped by a standard POSIX signal.
+    // We must act as a proxy: deciding whether to suppress the signal or inject it back.
     if (WIFSTOPPED(status)) {
+        // WPTEVENT == 0 guarantees this is a standard signal, not a ptrace internal event.
         if (WPTEVENT(status) == 0) {
             int sig = WSTOPSIG(status);
-            if (sig != SIGSTOP && sig != SIGTSTP && sig != SIGTTIN && sig != SIGTTOU) {
-                LOGW("inject signal sent to init: %s %d", sigabbrev_np(sig), sig);
+
+            // Suppress job-control signals.
+            // Injecting these back would physically freeze the parent process,
+            // causing the entire boot chain to hang.
+            if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) {
+                LOGW("suppressing stop signal %s (%d) sent to parent %d", sigabbrev_np(sig), sig,
+                     pid);
+            }
+            // Protect stub_zygote from SIGCHLD.
+            // When we freeze/resume its child for injection, the kernel sends SIGCHLD to the stub.
+            // By remaining attached and dropping the signal here, the stub remains safely ignorant.
+            else if (pid != 1 && sig == SIGCHLD) {
+                LOGV("shielding stub process %d from SIGCHLD to prevent native crash", pid);
+            }
+            // Pass all other signals (like SIGTERM, SIGUSR1) back to the process unaltered.
+            else {
+                LOGW("passing signal %s (%d) through to parent %d", sigabbrev_np(sig), sig, pid);
                 ptrace(PTRACE_CONT, pid, 0, sig);
                 return;
-            } else {
-                LOGW("suppress stopping signal sent to init: %s %d", sigabbrev_np(sig), sig);
             }
         }
+
+        // Resume the process for suppressed signals or any other benign ptrace stops.
         ptrace(PTRACE_CONT, pid, 0, 0);
     }
 }
 
+/**
+ * @brief Registers and prepares a newly discovered process for execve tracking.
+ */
 void AppMonitor::SigChldHandler::handleNewProcess(int pid) {
-    LOGV("new process %d attached", pid);
+    LOGV("new process %d discovered and attached", pid);
     process_.emplace(pid);
-    ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACEEXEC);
+
+    // Instruct the kernel to stop this process and notify us when it calls execve().
+    if (ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACEEXEC) == -1) {
+        PLOGE("set PTRACE_O_TRACEEXEC on new process %d", pid);
+    }
+
+    // Always resume the process.
     ptrace(PTRACE_CONT, pid, 0, 0);
 }
 
+/**
+ * @brief Evaluates the state of processes waiting to execute a program.
+ *
+ * This handler manages the critical race condition window between a process
+ * being forked and it calling execve().
+ */
 void AppMonitor::SigChldHandler::handleTracedProcess(int pid, int &status) {
+    bool keep_attached = false;
+
+    // The process has called execve(). We must now identify it.
     if (stopped_with(status, SIGTRAP, PTRACE_EVENT_EXEC)) {
-        handleExecEvent(pid, status);
-    } else {
-        LOGW("process %d received unknown status %s", pid, parse_status(status).c_str());
+        keep_attached = handleExecEvent(pid, status);
     }
+    // The kernel auto-attaches the forked child and pauses it with PTRACE_EVENT_STOP.
+    else if (stopped_with(status, SIGTRAP, PTRACE_EVENT_STOP)) {
+        LOGV("process %d acknowledged auto-attach trap, configuring execve tracking", pid);
+
+        // Safely apply the execve trap now that the process is guaranteed stopped and reaped.
+        if (ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACEEXEC) == -1) {
+            PLOGE("set PTRACE_O_TRACEEXEC on process %d", pid);
+        }
+
+        ptrace(PTRACE_CONT, pid, 0, 0);
+        keep_attached = true;
+    }
+    // Unexpected state during the pre-exec phase.
+    else {
+        LOGW("traced process %d stopped with unexpected status: %s", pid,
+             parse_status(status).c_str());
+    }
+
+    // Determine lifecycle routing based on the handlers above.
+    if (keep_attached) {
+        // If handleExecEvent promoted it to a stub or initiated injection,
+        // it no longer belongs in the pre-exec candidate pool.
+        if (stopped_with(status, SIGTRAP, PTRACE_EVENT_EXEC)) {
+            process_.erase(pid);
+        }
+        return;
+    }
+
+    // If the process is irrelevant (e.g., a random system daemon), clean up and detach.
     process_.erase(pid);
     if (WIFSTOPPED(status)) {
-        LOGV("detach process %d", pid);
+        LOGV("detaching irrelevant process %d", pid);
         ptrace(PTRACE_DETACH, pid, 0, 0);
     }
 }
 
-void AppMonitor::SigChldHandler::handleExecEvent(int pid, int &status) {
+/**
+ * @brief Identifies the biological identity of a process post-execve.
+ *
+ * @return true if the process was promoted (Stub) or handed off (Zygote).
+ *         false if the process is irrelevant and should be detached.
+ */
+bool AppMonitor::SigChldHandler::handleExecEvent(int pid, int &status) {
     auto program = get_program(pid);
-    LOGV("%d program %s", pid, program.c_str());
-    const char *tracer = nullptr;
+    LOGV("process %d executed program: %s", pid, program.c_str());
+
+    bool handled = false;
+
     do {
-        if (monitor_.get_tracing_state() != TRACING) {
-            LOGW("stop injecting %d because not tracing", pid);
+        // --- Intermediate Stub Identification ---
+        // If this program is a stub_zygote, we must promote it to a Process Factory.
+        // It will remain attached forever so we can shield it from SIGCHLD.
+        if (program.find("stub_zygote") != std::string::npos) {
+            LOGI("detected stub zygote at %d, promoting to parent monitor", pid);
+            stub_processes_.insert(pid);
+
+            // Upgrade tracing options to catch when it forks the real zygote.
+            ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACEFORK | PTRACE_O_TRACEEXEC);
+            ptrace(PTRACE_CONT, pid, 0, 0);
+
+            handled = true;
             break;
         }
-        if (program == monitor_.get_abi_manager().program_path_) {
-            tracer = monitor_.get_abi_manager().check_and_prepare_injection();
-            if (tracer == nullptr) break;
+
+        // --- Zygote Target Validation ---
+        if (monitor_.get_tracing_state() != TRACING) {
+            LOGW("ignoring potential target %d because tracing state is STOPPED", pid);
+            break;
         }
-        if (tracer != nullptr) {
-            LOGV("stopping %d", pid);
-            kill(pid, SIGSTOP);
-            ptrace(PTRACE_CONT, pid, 0, 0);
-            waitpid(pid, &status, __WALL);
-            if (stopped_with(status, SIGSTOP, 0)) {
-                LOGV("detaching %d", pid);
-                ptrace(PTRACE_DETACH, pid, 0, SIGSTOP);
-                status = 0;
-                auto p = fork_dont_care();
-                if (p == 0) {
-                    execl(tracer, basename(tracer), "trace", std::to_string(pid).c_str(),
-                          "--restart", nullptr);
-                    PLOGE("exec");
-                    kill(pid, SIGKILL);
-                    exit(1);
-                } else if (p == -1) {
-                    PLOGE("fork");
-                    kill(pid, SIGKILL);
-                }
+
+        if (program != monitor_.get_abi_manager().program_path_) {
+            break;  // Irrelevant program, exit block and return false.
+        }
+
+        const char *tracer = monitor_.get_abi_manager().check_and_prepare_injection();
+        if (tracer == nullptr) {
+            LOGE("failed to prepare injector for target %d", pid);
+            break;
+        }
+
+        // --- Zygote Handover Sequence ---
+        LOGV("intercepted target zygote %d, halting for injector hand-off", pid);
+
+        // Force the process into a standard SIGSTOP state.
+        kill(pid, SIGSTOP);
+        ptrace(PTRACE_CONT, pid, 0, 0);
+        waitpid(pid, &status, __WALL);
+
+        if (stopped_with(status, SIGSTOP, 0)) {
+            LOGV("target %d halted, detaching monitor to allow injector seize", pid);
+
+            // Detach, but leave the process frozen (SIGSTOP) for the injector daemon.
+            if (ptrace(PTRACE_DETACH, pid, 0, SIGSTOP) == -1) {
+                PLOGE("detach target %d", pid);
             }
+
+            // Fork and execute the external injector daemon.
+            auto p = fork_dont_care();
+            if (p == 0) {
+                execl(tracer, basename(tracer), "trace", std::to_string(pid).c_str(), "--restart",
+                      nullptr);
+                PLOGE("execute injector daemon");
+                kill(pid, SIGKILL);
+                _exit(1);
+            } else if (p == -1) {
+                PLOGE("fork injector daemon");
+                kill(pid, SIGKILL);
+            }
+
+            handled = true;
+        } else {
+            LOGE("target %d failed to enter SIGSTOP, status: %s", pid,
+                 parse_status(status).c_str());
         }
+
     } while (false);
+
+    // Ensure state transitions (like zygote_injected flags) are flushed to disk.
     monitor_.update_status();
+    return handled;
 }
