@@ -17,6 +17,7 @@ num_enum = "0.7"
 passfd = "0.1"
 procfs = "0.18"
 proc-maps = "0.4"
+serde_json = "1.0"
 
 rustix = { git = "https://github.com/JingMatrix/rustix", branch = "main", features = [ "fs", "net", "pipe", "thread" ] }
 

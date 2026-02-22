@@ -182,4 +182,5 @@ private:
     std::string prop_path_;
     std::string pre_section_;
     std::string post_section_;
+    std::string last_written_status_;
 };
