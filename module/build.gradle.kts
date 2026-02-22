@@ -1,25 +1,16 @@
-import android.databinding.tool.ext.capitalizeUS
-import java.security.MessageDigest
-import org.apache.tools.ant.filters.ReplaceTokens
-
+import com.android.build.api.variant.LibraryVariant
 import org.apache.tools.ant.filters.FixCrLfFilter
-
+import org.apache.tools.ant.filters.ReplaceTokens
 import org.apache.commons.codec.binary.Hex
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.security.KeyFactory
-import java.security.KeyPairGenerator
-import java.security.Signature
-import java.security.interfaces.EdECPrivateKey
-import java.security.interfaces.EdECPublicKey
-import java.security.spec.EdECPrivateKeySpec
-import java.security.spec.NamedParameterSpec
-import java.util.TreeSet
+import java.security.MessageDigest
+import org.gradle.process.ExecOperations
+import javax.inject.Inject
 
 plugins {
     alias(libs.plugins.agp.lib)
 }
 
+// region Extra Properties
 val moduleId: String by rootProject.extra
 val moduleName: String by rootProject.extra
 val verCode: Int by rootProject.extra
@@ -32,63 +23,112 @@ val minMagiskVersion: Int by rootProject.extra
 val workDirectory: String by rootProject.extra
 val commitHash: String by rootProject.extra
 val updateJson: String by rootProject.extra
+// endregion
 
-android.buildFeatures {
-    androidResources = false
-    buildConfig = false
+android {
+    androidResources.enable = false
+    buildFeatures.buildConfig = false
+}
+
+interface ExecOperationsService {
+    @get:Inject
+    val execOperations: ExecOperations
+}
+
+fun Project.registerShellInstallTask(
+    variant: LibraryVariant,
+    toolName: String,
+    pushTaskProvider: TaskProvider<Exec>,
+    zipFileNameProvider: Provider<String>,
+    installCommand: String
+): TaskProvider<Task> {
+    val variantCapped = variant.name.replaceFirstChar { it.titlecase() }
+    return tasks.register("install${toolName}${variantCapped}") {
+        group = "module"
+        description = "Pushes the module zip and installs it using $toolName."
+        dependsOn(pushTaskProvider)
+        val serviceHolder = project.objects.newInstance<ExecOperationsService>()
+        doLast {
+            val execOps = serviceHolder.execOperations
+            val zipFileName = zipFileNameProvider.get()
+            execOps.exec {
+                commandLine(
+                    "adb", "shell", "echo",
+                    "'$installCommand /data/local/tmp/$zipFileName'",
+                    "> /data/local/tmp/install.sh"
+                )
+            }
+            execOps.exec {
+                commandLine("adb", "shell", "chmod", "755", "/data/local/tmp/install.sh")
+            }
+            execOps.exec {
+                commandLine("adb", "shell", "su", "-c", "/data/local/tmp/install.sh")
+            }
+        }
+    }
+}
+
+fun Project.registerRebootTask(
+    variant: LibraryVariant,
+    toolName: String,
+    installTaskProvider: TaskProvider<out Task>
+): TaskProvider<Exec> {
+    val variantCapped = variant.name.replaceFirstChar { it.titlecase() }
+    return tasks.register<Exec>("install${toolName}AndReboot${variantCapped}") {
+        group = "module"
+        description = "Installs the module using $toolName and reboots the device."
+        dependsOn(installTaskProvider)
+        commandLine("adb", "reboot")
+    }
 }
 
 androidComponents.onVariants { variant ->
+    val variantCapped = variant.name.replaceFirstChar { it.titlecase() }
     val variantLowered = variant.name.lowercase()
-    val variantCapped = variant.name.capitalizeUS()
-    val buildTypeLowered = variant.buildType?.lowercase()
+    val buildTypeLowered = variant.buildType?.lowercase() ?: ""
 
     val moduleDir = layout.buildDirectory.dir("outputs/module/$variantLowered")
-    val zipFileName = "$moduleName-$verName-$verCode-$commitHash-$buildTypeLowered.zip".replace(' ', '-')
+    val zipFileNameProvider = provider { "$moduleName-$verName-$verCode-$commitHash-$buildTypeLowered.zip".replace(' ', '-') }
 
-    val prepareModuleFilesTask = task<Sync>("prepareModuleFiles$variantCapped") {
+    val prepareModuleFilesTask = tasks.register<Sync>("prepareModuleFiles$variantCapped") {
         group = "module"
-        dependsOn(
-            ":loader:assemble$variantCapped",
-            ":zygiskd:buildAndStrip",
-        )
+        dependsOn(":loader:assemble$variantCapped", ":zygiskd:buildAndStrip")
         into(moduleDir)
-        from("${rootProject.projectDir}/README.md")
-        from("$projectDir/src") {
+        from(rootProject.projectDir.resolve("README.md"))
+        from(projectDir.resolve("src")) {
             exclude("module.prop", "action.sh", "customize.sh", "post-fs-data.sh", "service.sh", "uninstall.sh", "zygisk-ctl.sh")
-            filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
+            filter<FixCrLfFilter>(mapOf("eol" to FixCrLfFilter.CrLf.newInstance("lf")))
         }
-        from("$projectDir/src") {
+        from(projectDir.resolve("src")) {
             include("module.prop")
             expand(
                 "moduleId" to moduleId,
                 "moduleName" to moduleName,
                 "versionName" to "$verName ($verCode-$commitHash-$variantLowered)",
-                "versionCode" to verCode,
+                "versionCode" to verCode.toString(),
                 "updateJson" to updateJson
             )
         }
-        from("$projectDir/src") {
+        from(projectDir.resolve("src")) {
             include("action.sh", "customize.sh", "post-fs-data.sh", "service.sh", "uninstall.sh", "zygisk-ctl.sh")
             val tokens = mapOf(
-                "DEBUG" to if (buildTypeLowered == "debug") "true" else "false",
-                "MIN_APATCH_VERSION" to "$minAPatchVersion",
-                "MIN_KSU_VERSION" to "$minKsuVersion",
-                "MIN_KSUD_VERSION" to "$minKsudVersion",
-                "MAX_KSU_VERSION" to "$maxKsuVersion",
-                "MIN_MAGISK_VERSION" to "$minMagiskVersion",
-                "WORK_DIRECTORY" to "$workDirectory",
+                "DEBUG" to (buildTypeLowered == "debug").toString(),
+                "MIN_APATCH_VERSION" to minAPatchVersion.toString(),
+                "MIN_KSU_VERSION" to minKsuVersion.toString(),
+                "MIN_KSUD_VERSION" to minKsudVersion.toString(),
+                "MAX_KSU_VERSION" to maxKsuVersion.toString(),
+                "MIN_MAGISK_VERSION" to minMagiskVersion.toString(),
+                "WORK_DIRECTORY" to workDirectory
             )
-            filter<ReplaceTokens>("tokens" to tokens)
-            filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
+            filter<ReplaceTokens>(mapOf("tokens" to tokens))
+            filter<FixCrLfFilter>(mapOf("eol" to FixCrLfFilter.CrLf.newInstance("lf")))
         }
         into("bin") {
-            from(project(":zygiskd").layout.buildDirectory.file("rustJniLibs/android"))
-            include("**/zygiskd")
+            from(project(":zygiskd").layout.buildDirectory.dir("rustJniLibs/android")) {
+                include("**/zygiskd")
+            }
         }
-        into("lib") {
-            from(project(":loader").layout.buildDirectory.file("intermediates/stripped_native_libs/$variantLowered/strip${variantCapped}DebugSymbols/out/lib"))
-        }
+        into("lib") { from(project(":loader").layout.buildDirectory.file("intermediates/stripped_native_libs/$variantLowered/strip${variantCapped}DebugSymbols/out/lib")) }
 
         doLast {
             fileTree(moduleDir).visit {
@@ -97,78 +137,47 @@ androidComponents.onVariants { variant ->
                 file.forEachBlock(4096) { bytes, size ->
                     md.update(bytes, 0, size)
                 }
-                file(file.path + ".sha256").writeText(Hex.encodeHexString(md.digest()))
+                // Use project.file() for robust path resolution.
+                project.file(file.path + ".sha256").writeText(Hex.encodeHexString(md.digest()))
             }
         }
     }
 
-    val zipTask = task<Zip>("zip$variantCapped") {
+    val zipTask = tasks.register<Zip>("zip$variantCapped") {
         group = "module"
         dependsOn(prepareModuleFilesTask)
-        archiveFileName.set(zipFileName)
-        destinationDirectory.set(layout.buildDirectory.file("outputs/release").get().asFile)
+        archiveFileName.set(zipFileNameProvider)
+        destinationDirectory.set(layout.buildDirectory.dir("outputs/release"))
         from(moduleDir)
     }
 
-    val pushTask = task<Exec>("push$variantCapped") {
+    val pushTask = tasks.register<Exec>("push$variantCapped") {
         group = "module"
         dependsOn(zipTask)
-        commandLine("adb", "push", zipTask.outputs.files.singleFile.path, "/data/local/tmp")
-    }
-
-    val installAPatchTask = task("installAPatch$variantCapped") {
-        group = "module"
-        dependsOn(pushTask)
-        doLast {
-            exec {
-                commandLine(
-                    "adb", "shell", "echo",
-                    "/data/adb/apd module install /data/local/tmp/$zipFileName",
-                    "> /data/local/tmp/install.sh"
-                )
-            }
-            exec { commandLine("adb", "shell", "chmod", "755", "/data/local/tmp/install.sh") }
-            exec { commandLine("adb", "shell", "su", "-c", "/data/local/tmp/install.sh") }
+        doFirst {
+            commandLine(
+                "adb",
+                "push",
+                zipTask.get().archiveFile.get().asFile.absolutePath,
+                "/data/local/tmp"
+            )
         }
     }
 
-    val installKsuTask = task("installKsu$variantCapped") {
+    val installAPatchTask = registerShellInstallTask(variant, "APatch", pushTask, zipFileNameProvider, "/data/adb/apd module install")
+    val installKsuTask = registerShellInstallTask(variant, "Ksu", pushTask, zipFileNameProvider, "/data/adb/ksud module install")
+
+    val installMagiskTask = tasks.register<Exec>("installMagisk$variantCapped") {
         group = "module"
         dependsOn(pushTask)
-        doLast {
-            exec {
-                commandLine(
-                    "adb", "shell", "echo",
-                    "/data/adb/ksud module install /data/local/tmp/$zipFileName",
-                    "> /data/local/tmp/install.sh"
-                )
-            }
-            exec { commandLine("adb", "shell", "chmod", "755", "/data/local/tmp/install.sh") }
-            exec { commandLine("adb", "shell", "su", "-c", "/data/local/tmp/install.sh") }
+        doFirst {
+            val zipFileName = zipFileNameProvider.get()
+            val installCommand = "su -c 'magisk --install-module /data/local/tmp/$zipFileName'"
+            commandLine("adb", "shell", installCommand)
         }
     }
 
-    val installMagiskTask = task<Exec>("installMagisk$variantCapped") {
-        group = "module"
-        dependsOn(pushTask)
-        commandLine("adb", "shell", "su", "-M", "-c", "magisk --install-module /data/local/tmp/$zipFileName")
-    }
-
-    task<Exec>("installAPatchAndReboot$variantCapped") {
-        group = "module"
-        dependsOn(installAPatchTask)
-        commandLine("adb", "reboot")
-    }
-
-    task<Exec>("installKsuAndReboot$variantCapped") {
-        group = "module"
-        dependsOn(installKsuTask)
-        commandLine("adb", "reboot")
-    }
-
-    task<Exec>("installMagiskAndReboot$variantCapped") {
-        group = "module"
-        dependsOn(installMagiskTask)
-        commandLine("adb", "reboot")
-    }
+    registerRebootTask(variant, "APatch", installAPatchTask)
+    registerRebootTask(variant, "Ksu", installKsuTask)
+    registerRebootTask(variant, "Magisk", installMagiskTask)
 }
