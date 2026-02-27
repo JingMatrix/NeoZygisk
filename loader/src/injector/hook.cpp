@@ -255,10 +255,24 @@ void HookContext::hook_plt() {
     dev_t android_runtime_dev = 0;
 
     cached_map_infos = lsplt::MapInfo::Scan();
-    for (auto &map : cached_map_infos) {
-        if (map.path.ends_with("/libandroid_runtime.so")) {
+
+    bool found_runtime = false;
+    bool found_art = false;
+
+    for (const auto &map : cached_map_infos) {
+        if (!found_runtime && map.path.ends_with("/libandroid_runtime.so")) {
             android_runtime_inode = map.inode;
             android_runtime_dev = map.dev;
+            found_runtime = true;
+        } 
+        else if (!found_art && map.path.ends_with("/libart.so")) {
+            g_art_inode = map.inode;
+            g_art_dev = map.dev;
+            found_art = true;
+        }
+
+        if (found_runtime && found_art) {
+            break; 
         }
     }
 
