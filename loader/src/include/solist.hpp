@@ -65,14 +65,20 @@ public:
     }
 
     static bool setup(const ElfParser::ElfImage &linker) {
-        ctor = MemFunc{.data = {.p = reinterpret_cast<void *>(
-                                    linker.findSymbolAddress("__dl__ZN18ProtectedDataGuardC2Ev")),
-                                .adj = 0}}
-                   .f;
-        dtor = MemFunc{.data = {.p = reinterpret_cast<void *>(
-                                    linker.findSymbolAddress("__dl__ZN18ProtectedDataGuardD2Ev")),
-                                .adj = 0}}
-                   .f;
+        // Helper lambda to attempt a primary symbol, then a fallback symbol
+        auto resolve = [&linker](const char *primary, const char *fallback) -> FuncType {
+            auto addr = linker.findSymbolAddress(primary);
+            if (!addr) {
+                addr = linker.findSymbolAddress(fallback);
+            }
+
+            return addr ? MemFunc{.data = {.p = reinterpret_cast<void *>(addr), .adj = 0}}.f
+                        : nullptr;
+        };
+
+        ctor = resolve("__dl__ZN18ProtectedDataGuardC2Ev", "__dl__ZN18ProtectedDataGuardC1Ev");
+        dtor = resolve("__dl__ZN18ProtectedDataGuardD2Ev", "__dl__ZN18ProtectedDataGuardD1Ev");
+
         return ctor != nullptr && dtor != nullptr;
     }
 
