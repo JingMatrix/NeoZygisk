@@ -8,6 +8,7 @@ plugins {
 val verCode: Int by rootProject.extra
 val verName: String by rootProject.extra
 val commitHash: String by rootProject.extra
+val workDirectory: String by rootProject.extra
 
 fun Project.findInPath(executable: String, property: String): String? {
     val pathEnv = System.getenv("PATH")
@@ -29,7 +30,8 @@ val defaultCFlags = arrayOf(
     "-Wall", "-Wextra",
     "-fno-rtti", "-fno-exceptions",
     "-fno-stack-protector", "-fomit-frame-pointer",
-    "-Wno-builtin-macro-redefined", "-D__FILE__=__FILE_NAME__"
+    "-Wno-builtin-macro-redefined", "-D__FILE__=__FILE_NAME__",
+    "-DWORK_DIRECTORY='\"${workDirectory}\"'"
 )
 
 val releaseFlags = arrayOf(

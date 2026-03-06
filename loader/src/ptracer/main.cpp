@@ -18,6 +18,8 @@
 // Use string_view literals for efficient, allocation-free string comparisons.
 using namespace std::string_view_literals;
 
+const char *const kWorkDirectory = WORK_DIRECTORY;
+
 // The main entry point for the monitoring process.
 void init_monitor() {
     LOGI("NeoZygisk %s", ZKSU_VERSION);
@@ -72,7 +74,7 @@ static int handle_version();
  */
 int main(int argc, char **argv) {
     // This initialization is for the daemon's internal logic, not for CLI output.
-    zygiskd::Init(getenv("TMP_PATH"));
+    zygiskd::Init(kWorkDirectory);
 
     if (argc < 2) {
         print_usage(argv[0]);

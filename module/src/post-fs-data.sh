@@ -26,7 +26,7 @@ create_sys_perm() {
   chcon u:object_r:system_file:s0 $1
 }
 
-export TMP_PATH=@WORK_DIRECTORY@
+TMP_PATH=@WORK_DIRECTORY@
 
 if [ -d $TMP_PATH ]; then
   rm -rf $TMP_PATH
