@@ -1,7 +1,7 @@
 #pragma once
 
 void init_monitor();
-bool trace_zygote(int pid);
+bool trace_zygote(int pid, bool is_standalone);
 
 enum Command {
     START = 1,
