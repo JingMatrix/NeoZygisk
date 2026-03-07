@@ -1,6 +1,10 @@
 #include "main.hpp"
 
 #include <err.h>
+#include <libgen.h>
+#include <limits.h>
+#include <signal.h>
+#include <sys/ptrace.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -65,6 +69,46 @@ static int handle_trace(int argc, char **argv);
 static int handle_ctl(int argc, char **argv);
 static int handle_version();
 
+// Global variable so our signal handler knows which PID to rescue
+static pid_t g_traced_pid = 0;
+
+/**
+ * @brief Signal handler to safely detach and resume Zygote if the user
+ *        interrupts the standalone tracer (e.g., Ctrl+C).
+ */
+static void handle_interrupt(int sig) {
+    if (g_traced_pid > 0) {
+        printf("\n[!] received signal %d, safely detaching from PID %d to prevent crash...\n", sig,
+               g_traced_pid);
+
+        // PTRACE_DETACH with SIGCONT ensures the process resumes execution
+        ptrace(PTRACE_DETACH, g_traced_pid, 0, SIGCONT);
+    }
+    _exit(EXIT_FAILURE);
+}
+
+/**
+ * @brief Resolves the binary path and changes the working directory to $MODDIR
+ *        ($MODDIR/bin/zygisk-ptrace64 -> $MODDIR)
+ */
+static void cd_to_moddir() {
+    char exe_path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len != -1) {
+        exe_path[len] = '\0';
+        // dirname() modifies the string in place.
+        // First dirname goes from .../bin/zygisk-ptrace64 to .../bin
+        // Second dirname goes from .../bin to .../ (which is $MODDIR)
+        char *mod_dir = dirname(dirname(exe_path));
+
+        if (chdir(mod_dir) == 0) {
+            printf("changed working directory to %s\n", mod_dir);
+        } else {
+            fprintf(stderr, "warning: failed to chdir to %s\n", mod_dir);
+        }
+    }
+}
+
 /**
  * @brief Main entry point for the NeoZygisk command-line interface.
  *
@@ -105,9 +149,10 @@ int main(int argc, char **argv) {
  */
 static void print_usage(const char *tool_name) {
     fprintf(stderr, "NeoZygisk Tracer %s\n", ZKSU_VERSION);
-    fprintf(stderr,
-            "usage: %s monitor | trace <pid> [--restart] | ctl <start|stop|exit> | version\n",
-            tool_name);
+    fprintf(
+        stderr,
+        "usage: %s monitor | trace <pid> [--restart | --standalone] | ctl <start|stop|exit> | version\n",
+        tool_name);
 }
 
 /**
@@ -147,20 +192,69 @@ static int handle_trace(int argc, char **argv) {
     pid_t pid = static_cast<pid_t>(pid_val);
     printf("preparing to trace PID: %d\n", pid);
 
-    // Handle optional --restart flag.
-    if (argc >= 4 && argv[3] == "--restart"sv) {
-        printf("zygote restart requested...\n");
-        zygiskd::ZygoteRestart();
+    // --- Flag Parsing ---
+    bool is_restart = false;
+    bool is_standalone = false;
+
+    if (argc >= 4) {
+        const auto flag = std::string_view(argv[3]);
+        if (flag == "--restart"sv) {
+            is_restart = true;
+        } else if (flag == "--standalone"sv) {
+            is_standalone = true;
+        } else {
+            fprintf(stderr, "error: unknown flag: '%s'\n", argv[3]);
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
     }
 
-    if (!trace_zygote(pid)) {
-        fprintf(stderr,
-                "error: failed to trace zygote, killing process %d to prevent system instability\n",
-                pid);
-        kill(pid, SIGKILL);
+    // --- Signal Handling for safe exit ---
+    g_traced_pid = pid;
+    signal(SIGINT, handle_interrupt);
+    signal(SIGTERM, handle_interrupt);
+
+    // --- Flag Execution ---
+    if (is_restart) {
+        printf("zygote restart requested...\n");
+        zygiskd::ZygoteRestart();
+    } else if (is_standalone) {
+        printf("standalone mode: preparing injection and starting daemon...\n");
+
+        auto pid = fork();
+        if (pid < 0) {
+            PLOGE("init_monitor");
+            return false;
+        } else if (pid == 0) {
+            // Change directory to $MODDIR BEFORE preparing the injection
+            cd_to_moddir();
+            AppMonitor monitor;
+            if (!monitor.prepare_environment()) {
+                exit(1);
+            }
+            if (monitor.get_abi_manager().check_and_prepare_injection() == nullptr) {
+                fprintf(stderr, "error: failed to start daemon and prepare injector\n");
+                return EXIT_FAILURE;
+            }
+            monitor.run();
+        }
+    }
+
+    // Call trace_zygote with is_standalone
+    if (!trace_zygote(pid, is_standalone)) {
+        if (!is_standalone) {
+            fprintf(stderr, "error: failed to trace zygote, killing process %d\n", pid);
+            kill(pid, SIGKILL);
+        } else {
+            // In standalone, we just fail gracefully.
+            fprintf(stderr, "error: failed to trace zygote. Process %d left intact.\n", pid);
+            ptrace(PTRACE_DETACH, pid, 0, SIGCONT);
+        }
         return EXIT_FAILURE;
     }
 
+    // Success, reset the global PID so we don't accidentally send signals on exit
+    g_traced_pid = 0;
     printf("successfully attached and injected into PID: %d\n", pid);
     return EXIT_SUCCESS;
 }
