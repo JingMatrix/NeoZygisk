@@ -1,10 +1,12 @@
 #include <dlfcn.h>
 #include <elf.h>
+#include <fcntl.h>
 #include <link.h>
 #include <signal.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/ptrace.h>
+#include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -18,12 +20,14 @@
 
 #include "daemon.hpp"
 #include "logging.hpp"
+#include "main.hpp"
 #include "utils.hpp"
 
 /**
  * @brief Shared logic to remotely load and initialize the injector library.
  */
-static bool execute_remote_injection(int pid, struct user_regs_struct &regs, const char *lib_path) {
+static bool execute_remote_injection(int pid, struct user_regs_struct &regs, const char *lib_path,
+                                     TraceMode mode) {
     auto map = MapInfo::Scan(std::to_string(pid));
     auto local_map = MapInfo::Scan();
     auto libc_return_addr = find_module_return_addr(map, "libc.so");
@@ -43,10 +47,50 @@ static bool execute_remote_injection(int pid, struct user_regs_struct &regs, con
         remote_call(pid, regs, (uintptr_t) dlopen_addr, (uintptr_t) libc_return_addr, args);
 
     if (remote_handle == 0) {
-        // [Keep all your existing dlerror handling logic here...]
-        LOGE("remote call to dlopen failed");
+        LOGE("remote call to dlopen failed, retrieving error message with dlerror");
+
+        auto dlerror_addr = find_func_addr(local_map, map, "libdl.so", "dlerror");
+        if (dlerror_addr == nullptr) {
+            LOGE("could not find address of dlerror; cannot retrieve error string");
+            return false;
+        }
+
+        // Remotely call dlerror() (takes no arguments)
+        args.clear();
+        auto dlerror_str_addr =
+            remote_call(pid, regs, (uintptr_t) dlerror_addr, (uintptr_t) libc_return_addr, args);
+
+        if (dlerror_str_addr == 0) {
+            LOGE("remote call to dlerror returned null");
+            return false;
+        }
+
+        auto strlen_addr = find_func_addr(local_map, map, "libc.so", "strlen");
+        if (strlen_addr == nullptr) {
+            LOGE("could not find address of strlen; cannot measure error string length");
+            return false;
+        }
+
+        // Remotely call strlen(dlerror_str_addr)
+        args.clear();
+        args.push_back(dlerror_str_addr);
+        auto dlerror_len =
+            remote_call(pid, regs, (uintptr_t) strlen_addr, (uintptr_t) libc_return_addr, args);
+
+        if (dlerror_len <= 0) {
+            LOGE("dlerror string length is invalid (%" PRIuPTR ")", dlerror_len);
+            return false;
+        }
+
+        // Read the actual error string from system_server's memory
+        std::string err;
+        err.resize(dlerror_len + 1, 0);
+        read_proc(pid, (uintptr_t) dlerror_str_addr, err.data(), dlerror_len);
+
+        LOGE("dlopen error: %s", err.c_str());
         return false;
     }
+
     LOGI("successfully loaded library via remote dlopen, handle: 0x%" PRIxPTR, remote_handle);
 
     // Remotely call dlsym(handle, "entry")
@@ -88,6 +132,7 @@ static bool execute_remote_injection(int pid, struct user_regs_struct &regs, con
     args.push_back(block_size);
     auto remote_tmp_path = push_string(pid, regs, zygiskd::GetTmpPath().c_str());
     args.push_back((long) remote_tmp_path);
+    args.push_back(mode);
     remote_call(pid, regs, injector_entry, (uintptr_t) libc_return_addr, args);
 
     return true;
@@ -110,8 +155,8 @@ static bool execute_remote_injection(int pid, struct user_regs_struct &regs, con
  *     deliberately invalid address. When the process is resumed, it will immediately trigger a
  *     segmentation fault (`SIGSEGV`), which we, as the tracer, can catch. This is a reliable
  *     way to pause the process at the perfect moment.
- * 4.  **Remote Code Execution**: Once the process is paused, we restore the original entry point.
- *     We then use `ptrace` to execute functions within the target process's context.
+ * 4.  **execute_remote_injection**: Once the process is paused, we restore the original entry
+ * point. We then use `ptrace` to execute functions within the target process's context.
  *     - Remotely call `dlopen()` to load our library.
  *     - Remotely call `dlsym()` to find the address of our library's `entry` function.
  *     - Remotely call our `entry` function to initialize NeoZygisk.
@@ -122,8 +167,8 @@ static bool execute_remote_injection(int pid, struct user_regs_struct &regs, con
  * @param lib_path The absolute path to the shared library to be injected.
  * @return True on successful injection, false otherwise.
  */
-bool inject_on_main(int pid, const char *lib_path) {
-    LOGI("starting library injection for PID: %d, library: %s", pid, lib_path);
+bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
+    LOGI("starting early library injection for PID: %d, library: %s", pid, lib_path);
 
     // Backup of the target's registers, to be restored before detaching.
     struct user_regs_struct regs{}, backup{};
@@ -259,7 +304,7 @@ bool inject_on_main(int pid, const char *lib_path) {
     // Backup the current registers before we start making remote calls.
     memcpy(&backup, &regs, sizeof(regs));
 
-    if (!execute_remote_injection(pid, regs, lib_path)) {
+    if (!execute_remote_injection(pid, regs, lib_path, mode)) {
         return false;
     }
 
@@ -275,8 +320,8 @@ bool inject_on_main(int pid, const char *lib_path) {
     return true;
 }
 
-bool inject_standalone(int pid, const char *lib_path) {
-    LOGI("starting standalone library injection for PID: %d, library: %s", pid, lib_path);
+bool inject_after_start(int pid, const char *lib_path, TraceMode mode) {
+    LOGI("starting late library injection for PID: %d, library: %s", pid, lib_path);
 
     struct user_regs_struct regs{}, backup{};
     if (!get_regs(pid, regs)) {
@@ -306,9 +351,7 @@ bool inject_standalone(int pid, const char *lib_path) {
 #endif
 
     // Execute the shared remote injection logic
-    if (!execute_remote_injection(pid, regs, lib_path)) {
-        return false;
-    }
+    bool sucess = execute_remote_injection(pid, regs, lib_path, mode);
 
     // Restore State directly.
     // The instruction pointer (REG_IP) is already correct in the backup.
@@ -318,7 +361,7 @@ bool inject_standalone(int pid, const char *lib_path) {
         return false;
     }
 
-    return true;
+    return sucess;
 }
 
 // Macro helper to check for specific ptrace stop events.
@@ -336,26 +379,90 @@ static bool wait_for_process(int pid, int *status) {
 }
 
 /**
+ * @brief Copies the library to a world-readable temporary file to bypass DAC restrictions.
+ * @param src_path The original path (e.g., /data/adb/neozygisk/lib64/libzygisk.so)
+ * @return The path to the temporary file, or an empty string on failure.
+ */
+static std::string copy_to_temp(const std::string &src_path) {
+    char tmp_path[] = "/data/local/tmp/zygisk_XXXXXX.so";
+
+    // mkstemps securely creates the file with a random 6-character string replacing XXXXXX.
+    // The '3' tells it to preserve the ".so" suffix.
+    int fd_out = mkstemps(tmp_path, 3);
+    if (fd_out < 0) {
+        PLOGE("failed to create temporary file in /data/local/tmp");
+        return "";
+    }
+
+    int fd_in = open(src_path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd_in < 0) {
+        PLOGE("failed to open source library: %s", src_path.c_str());
+        close(fd_out);
+        unlink(tmp_path);
+        return "";
+    }
+
+    // Copy contents
+    char buf[4096];
+    ssize_t bytes_read;
+    while ((bytes_read = read(fd_in, buf, sizeof(buf))) > 0) {
+        if (write(fd_out, buf, bytes_read) != bytes_read) {
+            PLOGE("failed to write to temporary library");
+            close(fd_in);
+            close(fd_out);
+            unlink(tmp_path);
+            return "";
+        }
+    }
+
+    close(fd_in);
+    close(fd_out);
+
+    // Make the file world-readable (and executable) so UID 1000 (system_server) can load it.
+    if (chmod(tmp_path, 0755) != 0) {
+        PLOGE("failed to chmod temporary library %s", tmp_path);
+    }
+
+    LOGV("created temporary library copy at: %s", tmp_path);
+    return std::string(tmp_path);
+}
+
+/**
  * @brief Injects the Zygisk library into the main thread.
  *
  * Shared logic between Seize and Attach methods.
  */
-static bool perform_injection(int pid, bool is_standalone) {
+static bool perform_injection(int pid, TraceMode mode) {
     std::string lib_path = zygiskd::GetTmpPath();
     lib_path += "/lib" LP_SELECT("", "64") "/libzygisk.so";
+    bool process_started = mode == TraceMode::STANDALONE || mode == TraceMode::SYSTEM_SERVER;
 
-    if (is_standalone) {
-        if (!inject_standalone(pid, lib_path.c_str())) {
-            LOGE("failed to inject standalone library into zygote (PID: %d)", pid);
+    std::string inject_path = lib_path;
+    bool use_temp = false;
+
+    if (mode == TraceMode::SYSTEM_SERVER) {
+        inject_path = copy_to_temp(lib_path);
+        if (inject_path.empty()) {
+            LOGE("aborting injection: could not create accessible library copy");
             return false;
         }
-    } else {
-        if (!inject_on_main(pid, lib_path.c_str())) {
-            LOGE("failed to inject library into zygote main (PID: %d)", pid);
-            return false;
-        }
+        use_temp = true;
     }
-    return true;
+
+    bool success = false;
+
+    if (process_started) {
+        success = inject_after_start(pid, inject_path.c_str(), mode);
+    } else {
+        success = inject_before_start(pid, inject_path.c_str(), mode);
+    }
+
+    if (use_temp) {
+        LOGV("cleaning up temporary library: %s", inject_path.c_str());
+        unlink(inject_path.c_str());
+    }
+
+    return success;
 }
 
 /**
@@ -392,17 +499,19 @@ static bool detach_with_gki_workaround(int pid, int detach_signal) {
 
 // --- Strategy 1: PTRACE_SEIZE (Preferred) ---
 
-static bool trace_with_seize(int pid, bool is_standalone) {
+static bool trace_with_seize(int pid, TraceMode mode) {
     LOGI("attempting trace_seize on PID %d", pid);
 
-    int options = is_standalone ? 0 : PTRACE_O_EXITKILL;
-    // PTRACE_O_EXITKILL ensures Zygote dies if we crash, preventing a zombie state.
+    bool process_started = mode == TraceMode::STANDALONE || mode == TraceMode::SYSTEM_SERVER;
+
+    int options = process_started ? 0 : PTRACE_O_EXITKILL;
+    // PTRACE_O_EXITKILL ensures target dies if we crash, preventing a zombie state.
     if (ptrace(PTRACE_SEIZE, pid, 0, options) == -1) {
         // We do not return false here immediately; we let the caller handle errno.
         return false;
     }
 
-    if (is_standalone) {
+    if (process_started) {
         // PTRACE_SEIZE does NOT stop the process. We must explicitly interrupt it.
         LOGV("standalone mode: sending PTRACE_INTERRUPT to pause the running process");
         if (ptrace(PTRACE_INTERRUPT, pid, 0, 0) == -1) {
@@ -424,20 +533,23 @@ static bool trace_with_seize(int pid, bool is_standalone) {
     // Determine the expected stop signal.
     // Normal flow (already SIGSTOPped): SIGSTOP + PTRACE_EVENT_STOP
     // Standalone (PTRACE_INTERRUPT):    SIGTRAP + PTRACE_EVENT_STOP
-    bool valid_stop = is_standalone ? STOPPED_WITH(SIGTRAP, PTRACE_EVENT_STOP)
-                                    : STOPPED_WITH(SIGSTOP, PTRACE_EVENT_STOP);
+    bool valid_stop = process_started ? STOPPED_WITH(SIGTRAP, PTRACE_EVENT_STOP)
+                                      : STOPPED_WITH(SIGSTOP, PTRACE_EVENT_STOP);
 
     if (valid_stop) {
         // 1. Inject Payload
-        if (!perform_injection(pid, is_standalone)) {
+        if (!perform_injection(pid, mode)) {
             BAIL_AND_DETACH
         }
 
-        if (is_standalone) {
+        if (mode == TraceMode::SYSTEM_SERVER) {
+            LOGV("system_server injected");
+            return true;
+        } else if (mode == TraceMode::STANDALONE) {
             // In standalone mode, we interrupted a running process. It doesn't need
             // a SIGCONT to wake up, just a clean detach.
-            LOGV("injection complete, applying GKI workaround and detaching");
-            return detach_with_gki_workaround(pid, 0);  // 0 means don't inject any signal
+            LOGV("standalone injection complete");
+            return true;
         } else {
             LOGV("injection complete, starting signal continuation sequence");
 
@@ -486,7 +598,7 @@ static bool trace_with_seize(int pid, bool is_standalone) {
 
 // --- Strategy 2: PTRACE_ATTACH (Fallback) ---
 
-static bool trace_with_attach(int pid, bool is_standalone) {
+static bool trace_with_attach(int pid, TraceMode mode) {
     LOGI("falling back to trace_attach on PID %d", pid);
 
     // Classic attach. This sends SIGSTOP to the process immediately.
@@ -505,13 +617,13 @@ static bool trace_with_attach(int pid, bool is_standalone) {
     // Classic ATTACH results in a STOPPED status with SIGSTOP.
     // It does NOT use PTRACE_EVENT_STOP in the status bits usually.
     if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP) {
-        if (!is_standalone) {
+        if (mode == TraceMode::SPAWN) {
             // Set EXITKILL for parity with SEIZE
             ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_EXITKILL);
         }
 
         // 1. Inject Payload
-        if (!perform_injection(pid, is_standalone)) {
+        if (!perform_injection(pid, mode)) {
             ptrace(PTRACE_DETACH, pid, 0, 0);
             return false;
         }
@@ -532,20 +644,19 @@ static bool trace_with_attach(int pid, bool is_standalone) {
 }
 
 /**
- * @brief Attaches to the Zygote process and initiates the injection.
+ * @brief Attaches to the target process and initiates the injection.
  *
  * Tries modern PTRACE_SEIZE first. If that fails with I/O error (EIO),
  * falls back to classic PTRACE_ATTACH.
  *
  * @return True on success, false on failure.
  */
-bool trace_zygote(int pid, bool is_standalone) {
-    LOGI("attaching to zygote (PID: %d) to begin injection (standalone: %s)", pid,
-         is_standalone ? "true" : "false");
+bool trace_target(int pid, TraceMode mode) {
+    LOGI("attaching to process [PID: %d, mode : %d]", pid, mode);
 
     // 1. Try SEIZE (Modern, robust handling of group stops)
-    if (trace_with_seize(pid, is_standalone)) {
-        LOGI("successfully detached from zygote (via SEIZE), NeoZygisk active");
+    if (trace_with_seize(pid, mode)) {
+        LOGI("successfully detached from %d (via SEIZE), NeoZygisk active", pid);
         return true;
     }
 
@@ -555,8 +666,8 @@ bool trace_zygote(int pid, bool is_standalone) {
     if (errno == EIO) {
         LOGW("PTRACE_SEIZE failed with EIO, attempting fallback to PTRACE_ATTACH");
 
-        if (trace_with_attach(pid, is_standalone)) {
-            LOGI("successfully detached from zygote (via ATTACH), NeoZygisk active");
+        if (trace_with_attach(pid, mode)) {
+            LOGI("successfully detached from %d (via ATTACH), NeoZygisk active", pid);
             return true;
         }
     } else {

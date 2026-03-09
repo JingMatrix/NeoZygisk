@@ -2,13 +2,14 @@
 
 #include "daemon.hpp"
 #include "logging.hpp"
+#include "trace.hpp"
 #include "zygisk.hpp"
 
 using namespace std;
 
 extern "C" [[gnu::visibility("default")]]
-void entry(void* addr, size_t size, const char* path) {
-    LOGI("zygisk library injected, version %s", ZKSU_VERSION);
+void entry(void* addr, size_t size, const char* path, TraceMode mode) {
+    LOGI("zygisk library injected, version %s [mode: %d]", ZKSU_VERSION, mode);
 
     zygiskd::Init(path);
 
@@ -18,7 +19,16 @@ void entry(void* addr, size_t size, const char* path) {
     }
 
     hook_entry(addr, size);
-    send_seccomp_event_if_needed();
+    if (mode == TraceMode::SYSTEM_SERVER) {
+        LOGI("preparing to invoke modules for system_server");
+    } else {
+        send_seccomp_event_if_needed();
+    }
+
+    // Tiggering Zygote hooks
+    if (mode == TraceMode::STANDALONE) {
+        trigger_zygote_hooks();
+    }
 }
 
 /**

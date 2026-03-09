@@ -60,4 +60,5 @@ else
 	elif [ -f $MODDIR/bin/zygisk-ptrace32 ]; then
 		$MODDIR/bin/zygisk-ptrace32 trace $(pidof zygote32) --standalone &
 	fi
+	$MODDIR/bin/zygisk-ptrace64 trace $(pidof system_server) --system_server &
 fi
