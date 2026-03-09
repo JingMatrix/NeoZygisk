@@ -110,7 +110,7 @@ public:
 
     // Public Lifecycle Methods
     bool prepare_environment();
-    void run();
+    void run(bool socket_loop = true, bool ptrace_loop = true);
 
     // Public Interface for state changes and notifications
     void update_status();

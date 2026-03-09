@@ -151,7 +151,7 @@ static void print_usage(const char *tool_name) {
     fprintf(stderr, "NeoZygisk Tracer %s\n", ZKSU_VERSION);
     fprintf(
         stderr,
-        "usage: %s monitor | trace <pid> [--restart | --standalone] | ctl <start|stop|exit> | version\n",
+        "usage: %s monitor | trace <pid> [--spwan | --standalone | --system_server] | ctl <start|stop|exit> | version\n",
         tool_name);
 }
 
@@ -193,15 +193,16 @@ static int handle_trace(int argc, char **argv) {
     printf("preparing to trace PID: %d\n", pid);
 
     // --- Flag Parsing ---
-    bool is_restart = false;
-    bool is_standalone = false;
+    TraceMode mode = TraceMode::UNKNOWN;
 
     if (argc >= 4) {
         const auto flag = std::string_view(argv[3]);
-        if (flag == "--restart"sv) {
-            is_restart = true;
+        if (flag == "--spawn"sv) {
+            mode = TraceMode::SPAWN;
         } else if (flag == "--standalone"sv) {
-            is_standalone = true;
+            mode = TraceMode::STANDALONE;
+        } else if (flag == "--system_server"sv) {
+            mode = TraceMode::SYSTEM_SERVER;
         } else {
             fprintf(stderr, "error: unknown flag: '%s'\n", argv[3]);
             print_usage(argv[0]);
@@ -215,10 +216,11 @@ static int handle_trace(int argc, char **argv) {
     signal(SIGTERM, handle_interrupt);
 
     // --- Flag Execution ---
-    if (is_restart) {
-        printf("zygote restart requested...\n");
+    std::string target = "zygote";
+    if (mode == TraceMode::SPAWN) {
+        printf("reporting zygote restart...\n");
         zygiskd::ZygoteRestart();
-    } else if (is_standalone) {
+    } else if (mode == TraceMode::STANDALONE) {
         printf("standalone mode: preparing injection and starting daemon...\n");
 
         auto pid = fork();
@@ -236,18 +238,21 @@ static int handle_trace(int argc, char **argv) {
                 fprintf(stderr, "error: failed to start daemon and prepare injector\n");
                 return EXIT_FAILURE;
             }
-            monitor.run();
+            monitor.run(true, false);
         }
+    } else if (mode == TraceMode::SYSTEM_SERVER) {
+        target = "system_server";
+        printf("injecting into system_server");
     }
 
-    // Call trace_zygote with is_standalone
-    if (!trace_zygote(pid, is_standalone)) {
-        if (!is_standalone) {
+    if (!trace_target(pid, mode)) {
+        if (mode == TraceMode::SPAWN) {
             fprintf(stderr, "error: failed to trace zygote, killing process %d\n", pid);
             kill(pid, SIGKILL);
         } else {
             // In standalone, we just fail gracefully.
-            fprintf(stderr, "error: failed to trace zygote. Process %d left intact.\n", pid);
+            fprintf(stderr, "error: failed to trace %s. Process %d left intact.\n", target.data(),
+                    pid);
             ptrace(PTRACE_DETACH, pid, 0, SIGCONT);
         }
         return EXIT_FAILURE;
