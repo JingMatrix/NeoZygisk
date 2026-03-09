@@ -2,6 +2,7 @@
 
 #include "daemon.hpp"
 #include "logging.hpp"
+#include "system_server.hpp"
 #include "trace.hpp"
 #include "zygisk.hpp"
 
@@ -18,10 +19,10 @@ void entry(void* addr, size_t size, const char* path, TraceMode mode) {
         return;
     }
 
-    hook_entry(addr, size);
     if (mode == TraceMode::SYSTEM_SERVER) {
-        LOGI("preparing to invoke modules for system_server");
+        trigger_system_server_hooks();
     } else {
+        hook_entry(addr, size);
         send_seccomp_event_if_needed();
     }
 
