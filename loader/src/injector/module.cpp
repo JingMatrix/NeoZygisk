@@ -324,8 +324,9 @@ void ZygiskContext::run_modules_post() {
         LOGV("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         if (modules.size() == modules_unloaded) clean_libc_trace();
         clean_linker_trace("jit-cache-zygisk", modules.size(), modules_unloaded, true);
-        g_hook->should_spoof_maps =
-            (flags & APP_SPECIALIZE) && (modules.size() - modules_unloaded) > 0;
+        if (g_hook != nullptr)
+            g_hook->should_spoof_maps =
+                (flags & APP_SPECIALIZE) && (modules.size() - modules_unloaded) > 0;
     }
 }
 

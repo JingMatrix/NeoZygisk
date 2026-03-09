@@ -440,14 +440,14 @@ static bool perform_injection(int pid, TraceMode mode) {
     std::string inject_path = lib_path;
     bool use_temp = false;
 
-    if (mode == TraceMode::SYSTEM_SERVER) {
-        inject_path = copy_to_temp(lib_path);
-        if (inject_path.empty()) {
-            LOGE("aborting injection: could not create accessible library copy");
-            return false;
-        }
-        use_temp = true;
-    }
+    // if (mode == TraceMode::SYSTEM_SERVER) {
+    //     inject_path = copy_to_temp(lib_path);
+    //     if (inject_path.empty()) {
+    //         LOGE("aborting injection: could not create accessible library copy");
+    //         return false;
+    //     }
+    //     use_temp = true;
+    // }
 
     bool success = false;
 
