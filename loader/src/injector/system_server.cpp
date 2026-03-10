@@ -147,7 +147,7 @@ void trigger_system_server_hooks() {
     jint uid = static_cast<jint>(getuid());
     jint gid = static_cast<jint>(getgid());
     jintArray gids = fetch_gids(env);
-    jint runtime_flags = 0;
+    jint runtime_flags = RuntimeFlags::LATE_INJECT;
     jlong permitted_capabilities = 0;
     jlong effective_capabilities = 0;
 
