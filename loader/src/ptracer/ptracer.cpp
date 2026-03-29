@@ -261,14 +261,19 @@ bool inject_on_main(int pid, const char *lib_path) {
     // Find the address range of the injected library to pass to its entry function.
     map = MapInfo::Scan(std::to_string(pid));
     void *start_addr = nullptr;
+    uintptr_t end_addr = 0;
     size_t block_size = 0;
     for (const auto &info : map) {
         if (info.path.find("libzygisk.so") != std::string::npos) {
             if (start_addr == nullptr) start_addr = (void *) info.start;
-            block_size += (info.end - info.start);
+            if (info.end > end_addr) end_addr = info.end;
         }
     }
-    LOGV("found injected library mapped from %p with total size %zu", start_addr, block_size);
+    if (start_addr != nullptr && end_addr > reinterpret_cast<uintptr_t>(start_addr)) {
+        block_size = end_addr - reinterpret_cast<uintptr_t>(start_addr);
+    }
+    LOGV("found injected library mapped from %p to %p with span size %zu", start_addr,
+         (void *) end_addr, block_size);
 
     // Remotely call our entry(start_addr, block_size, path) function
     LOGI("calling the injector's entry function to initialize NeoZygisk");
