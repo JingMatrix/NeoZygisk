@@ -260,6 +260,29 @@ void *find_func_addr(const std::vector<MapInfo> &local_info,
 // Most ABIs require the stack to be 16-byte aligned.
 constexpr uintptr_t STACK_ALIGN_MASK = ~0xf;
 
+#if defined(__aarch64__)
+namespace {
+constexpr uint32_t AARCH64_BTI_C = 0xd503245f;
+constexpr uint32_t AARCH64_BTI_J = 0xd503249f;
+constexpr uint32_t AARCH64_BTI_JC = 0xd50324df;
+constexpr uint64_t AARCH64_PSTATE_BTYPE_MASK = 0x3ull << 10;
+
+uintptr_t prepare_aarch64_call_target(int pid, struct user_regs_struct &regs, uintptr_t func_addr) {
+    uint32_t first_insn = 0;
+    if (read_proc(pid, func_addr, &first_insn, sizeof(first_insn)) == sizeof(first_insn)) {
+        if (first_insn == AARCH64_BTI_C || first_insn == AARCH64_BTI_J ||
+            first_insn == AARCH64_BTI_JC) {
+            LOGV("skipping BTI landing pad at 0x%" PRIxPTR, func_addr);
+            func_addr += sizeof(first_insn);
+        }
+    }
+
+    regs.pstate &= ~AARCH64_PSTATE_BTYPE_MASK;
+    return func_addr;
+}
+}  // namespace
+#endif
+
 void align_stack(struct user_regs_struct &regs, long preserve) {
     regs.REG_SP = (regs.REG_SP - preserve) & STACK_ALIGN_MASK;
 }
@@ -364,7 +387,7 @@ uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_add
         }
     }
     regs.regs[30] = return_addr;  // Link Register (LR)
-    regs.REG_IP = func_addr;
+    regs.REG_IP = prepare_aarch64_call_target(pid, regs, func_addr);
 
 #elif defined(__arm__)
     // ABI: r0-r3, then stack
@@ -418,6 +441,12 @@ uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_add
         LOGV("remote call returned, result: 0x%" PRIXPTR, (uintptr_t) regs.REG_RET);
         return regs.REG_RET;
     } else {
+        uint32_t first_insn = 0;
+        if (read_proc(pid, func_addr, &first_insn, sizeof(first_insn)) == sizeof(first_insn)) {
+            LOGE("remote call target 0x%" PRIxPTR " in %s starts with insn 0x%08" PRIx32, func_addr,
+                 get_addr_mem_region(MapInfo::Scan(std::to_string(pid)), func_addr).c_str(),
+                 first_insn);
+        }
         LOGE("process stopped unexpectedly after remote call: %s at ip=0x%" PRIXPTR
              ", expected stop at 0x%" PRIXPTR,
              parse_status(status).c_str(), (uintptr_t) regs.REG_IP, return_addr);

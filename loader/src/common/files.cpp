@@ -1,5 +1,6 @@
 #include "files.hpp"
 
+#include <cstdlib>
 #include <sys/sysmacros.h>
 
 using namespace std::string_view_literals;

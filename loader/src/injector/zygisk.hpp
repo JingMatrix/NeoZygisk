@@ -3,6 +3,7 @@
 #include <jni.h>
 #include <sys/types.h>
 
+#include <vector>
 #include <string>
 
 struct mount_info {
