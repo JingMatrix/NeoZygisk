@@ -3,7 +3,7 @@ typeattribute zygisk_file mlstrustedobject
 allow zygote zygisk_file sock_file {read write}
 
 allow zygote magisk lnk_file read
-allow zygote unlabeled file {read open}
+allow zygote unlabeled {file sock_file} *
 allow zygote zygote capability sys_chroot
 allow zygote su dir search
 allow zygote su {lnk_file file} read
