@@ -73,6 +73,8 @@ void Init(const char* path);
 
 std::string GetTmpPath();
 
+int Connect(uint8_t retry);
+
 bool PingHeartbeat();
 
 std::vector<Module> ReadModules();

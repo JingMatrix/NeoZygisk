@@ -331,21 +331,24 @@ void ZygiskContext::run_modules_post() {
 
 void ZygiskContext::app_specialize_pre() {
     uid_t uid = args.app->uid;
-    // Correct uid for isolated services
-    if (uid >= AID_ISOLATED_START && uid <= AID_ISOLATED_END && args.app->app_data_dir) {
+    bool is_isolated_aid = uid >= AID_ISOLATED_START && uid <= AID_ISOLATED_END;
+    if (is_isolated_aid && args.app->app_data_dir) {
         const char *data_dir = nullptr;
         data_dir = env->GetStringUTFChars(args.app->app_data_dir, nullptr);
         if (data_dir != nullptr) {
             struct stat st;
             if (stat(data_dir, &st) != -1) {
+                // Correct uid for isolated services
                 uid = st.st_uid;
-                LOGV("identify isolated service [uid:%d, data_dir:%s]", uid, data_dir);
             }
+            LOGV("Found isolated process [uid:%d, data_dir:%s]", uid, data_dir);
             env->ReleaseStringUTFChars(args.app->app_data_dir, data_dir);
         }
     }
 
-    if (info_flags == 0) info_flags = zygiskd::GetProcessFlags(uid);
+    bool skip_zygiskd = is_isolated_aid && zygiskd::Connect(1) == -1;
+
+    if (!skip_zygiskd && info_flags == 0) info_flags = zygiskd::GetProcessFlags(uid);
 
     if ((info_flags & UNMOUNT_MASK) == UNMOUNT_MASK) {
         LOGI("[%s] is on the denylist", process);
@@ -353,7 +356,7 @@ void ZygiskContext::app_specialize_pre() {
     }
 
     flags |= APP_SPECIALIZE;
-    run_modules_pre();
+    if (!skip_zygiskd) run_modules_pre();
 }
 
 void ZygiskContext::app_specialize_post() {
