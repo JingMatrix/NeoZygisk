@@ -106,10 +106,14 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
     if (g_ctx && (flags & CLONE_NEWNS) && !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE)) {
         bool should_unmount = !(g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) &&
                               g_ctx->flags & DO_REVERT_UNMOUNT;
-        if (!should_unmount && g_hook->zygote_unmounted) {
+        if (!should_unmount && g_hook->zygote_unmounted_times > 0) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
         }
-        bool is_zygote_clean = g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0;
+
+        // WARNING: we may miss traces (with low possibility) due to lack of unmounted times.
+        // However, checking via `check_zygote_traces` frequently is unnecessary for most users.
+        bool is_zygote_clean =
+            g_hook->zygote_unmounted_times > 0 && g_hook->zygote_traces.size() == 0;
         if (should_unmount && !is_zygote_clean) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
         }
