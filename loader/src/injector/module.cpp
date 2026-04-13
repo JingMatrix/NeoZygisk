@@ -450,10 +450,10 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
     LOGV("pre forkAndSpecialize [%s]", process);
     flags |= APP_FORK_AND_SPECIALIZE;
 
-    if (!g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0) {
+    if (g_hook->zygote_unmounted_times < 5 && g_hook->zygote_traces.size() == 0) {
         info_flags = zygiskd::GetProcessFlags(args.app->uid);
 
-        g_hook->zygote_traces = check_zygote_traces(info_flags);
+        g_hook->zygote_traces = check_zygote_traces(info_flags, g_hook->zygote_unmounted_times);
 
         if (!abort_zygote_unmount(g_hook->zygote_traces, info_flags)) {
             auto removal_predicate = [](const mount_info &trace) {
@@ -470,7 +470,7 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
                                           g_hook->zygote_traces.end(), removal_predicate);
 
             g_hook->zygote_traces.erase(new_end, g_hook->zygote_traces.end());
-            g_hook->zygote_unmounted = true;
+            g_hook->zygote_unmounted_times += 1;
         }
     }
 

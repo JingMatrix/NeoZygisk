@@ -92,7 +92,7 @@ std::vector<mount_info> parse_mount_info(const char* pid) {
     return result;
 }
 
-std::vector<mount_info> check_zygote_traces(uint32_t info_flags) {
+std::vector<mount_info> check_zygote_traces(uint32_t info_flags, size_t round) {
     std::vector<mount_info> traces;
 
     auto mount_infos = parse_mount_info("self");
@@ -150,7 +150,7 @@ std::vector<mount_info> check_zygote_traces(uint32_t info_flags) {
     std::sort(traces.begin(), traces.end(),
               [](const mount_info& a, const mount_info& b) { return a.id > b.id; });
 
-    LOGV("found %zu mounting traces in zygote.", traces.size());
+    LOGV("found %zu mounting traces in zygote [round: %zu].", traces.size(), round);
 
     return traces;
 }
