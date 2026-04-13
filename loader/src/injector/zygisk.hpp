@@ -33,4 +33,4 @@ void spoof_zygote_fossil(char *search_from, char *search_to, const char *anchor)
 
 void send_seccomp_event_if_needed();
 
-std::vector<mount_info> check_zygote_traces(uint32_t info_flags);
+std::vector<mount_info> check_zygote_traces(uint32_t info_flags, size_t round);

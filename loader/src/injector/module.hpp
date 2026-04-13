@@ -324,7 +324,7 @@ struct HookContext {
     bool should_spoof_maps = false;
     bool should_unmap = false;
     bool skip_hooking_unloader = false;
-    bool zygote_unmounted = false;
+    size_t zygote_unmounted_times = 0;
     jint MODIFIER_NATIVE = 0;
     jmethodID member_getModifiers = nullptr;
     std::vector<lsplt::MapInfo> cached_map_infos = {};
