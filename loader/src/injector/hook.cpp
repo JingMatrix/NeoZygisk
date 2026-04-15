@@ -90,10 +90,21 @@ HookContext *g_hook;
     ret (*old_##func)(__VA_ARGS__);                                                                \
     ret new_##func(__VA_ARGS__)
 
+#define DCL_HOOK_FUNC(ret, func, ...)                                                              \
+    ret (*old_##func)(__VA_ARGS__);                                                                \
+    ret new_##func(__VA_ARGS__)
+
 DCL_HOOK_FUNC(static char *, strdup, const char *str) {
-    if (strcmp(kZygoteInit, str) == 0) {
-        g_hook->hook_zygote_jni();
-        g_hook->cached_map_infos = lsplt::MapInfo::Scan();
+    static std::atomic<bool> zygote_hooked{false};
+    
+    if (!zygote_hooked.load(std::memory_order_acquire) && str != nullptr) {
+        if (str[0] == kZygoteInit[0] && strcmp(kZygoteInit, str) == 0) {
+            bool expected = false;
+            if (zygote_hooked.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                g_hook->hook_zygote_jni();
+                g_hook->cached_map_infos = lsplt::MapInfo::Scan();
+            }
+        }
     }
     return old_strdup(str);
 }
@@ -105,11 +116,11 @@ DCL_HOOK_FUNC(int, fork) { return (g_ctx && g_ctx->pid >= 0) ? g_ctx->pid : old_
 DCL_HOOK_FUNC(static int, unshare, int flags) {
     if (g_ctx && (flags & CLONE_NEWNS) && !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE)) {
         bool should_unmount = !(g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) &&
-                              g_ctx->flags & DO_REVERT_UNMOUNT;
+                              (g_ctx->flags & DO_REVERT_UNMOUNT);
         if (!should_unmount && g_hook->zygote_unmounted) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
         }
-        bool is_zygote_clean = g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0;
+        bool is_zygote_clean = g_hook->zygote_unmounted && g_hook->zygote_traces.empty();
         if (should_unmount && !is_zygote_clean) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
         }
@@ -121,21 +132,36 @@ DCL_HOOK_FUNC(static int, unshare, int flags) {
 }
 
 DCL_HOOK_FUNC(int, property_get, const char *key, char *value, const char *default_value) {
-    if (!g_hook->skip_hooking_unloader) {
-        g_hook->hook_unloader();
-        g_hook->skip_hooking_unloader = true;
-        for (auto it = g_hook->plt_backup.rbegin(); it != g_hook->plt_backup.rend(); ++it) {
-            const auto &[dev, inode, sym, old_func] = *it;
-            if (*old_func == old_property_get) {
-                if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr) ||
-                    !lsplt::CommitHook(g_hook->cached_map_infos, true)) {
-                    PLOGE("unhook property_get");
-                } else {
-                    // A reverse_iterator must be converted to a forward iterator.
-                    // The `base()` of the *next* iterator gives the correct position.
-                    g_hook->plt_backup.erase(std::next(it).base());
+    if (key && !g_spoof_props.empty()) {
+        auto it = g_spoof_props.find(key);
+        if (it != g_spoof_props.end()) {
+            if (value) {
+                strlcpy(value, it->second.c_str(), PROP_VALUE_MAX);
+            }
+            return it->second.length();
+        }
+    }
+
+    static std::atomic<bool> unloader_triggered{false};
+    
+    bool expected = false;
+    if (unloader_triggered.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        
+        if (!g_hook->skip_hooking_unloader) {
+            g_hook->hook_unloader();
+            g_hook->skip_hooking_unloader = true;
+
+            for (auto it = g_hook->plt_backup.rbegin(); it != g_hook->plt_backup.rend(); ++it) {
+                const auto &[dev, inode, sym, old_func] = *it;
+                if (*old_func == old_property_get) {
+                    if (!lsplt::RegisterHook(dev, inode, sym, *old_func, nullptr) ||
+                        !lsplt::CommitHook(g_hook->cached_map_infos, true)) {
+                        PLOGE("unhook property_get");
+                    } else {
+                        g_hook->plt_backup.erase(std::next(it).base());
+                    }
+                    break;
                 }
-                break;
             }
         }
     }
