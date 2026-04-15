@@ -457,6 +457,12 @@ void ZygiskContext::nativeForkAndSpecialize_pre() {
 
         if (!abort_zygote_unmount(g_hook->zygote_traces, info_flags)) {
             auto removal_predicate = [](const mount_info &trace) {
+                // Fix Magisk root loss: skip unmounting items tagged as "magisk"
+                if (trace.source == "magisk") {
+                    LOGV("skip magisk specific mounts for compatibility: %s",
+                         trace.raw_info.c_str());
+                    return false; // Return false to keep this trace in the vector/mount list
+                }
                 LOGV("unmounting %s (mnt_id: %u)", trace.target.c_str(), trace.id);
                 if (umount2(trace.target.c_str(), MNT_DETACH) == 0) {
                     return true;  // Success: Mark for removal.
