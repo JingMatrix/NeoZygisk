@@ -7,6 +7,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <lsplt.hpp>
@@ -19,6 +20,106 @@
 #include "zygisk.hpp"
 
 using namespace std;
+
+using CheckSELinuxAccessFn = jboolean (*)(JNIEnv *, jclass, jstring, jstring, jstring, jstring);
+
+static CheckSELinuxAccessFn orig_check_selinux_access = nullptr;
+
+struct ScopedUtfChars {
+    JNIEnv *env = nullptr;
+    jstring str = nullptr;
+    const char *value = nullptr;
+
+    ScopedUtfChars(JNIEnv *env, jstring str) : env(env), str(str) {
+        if (env != nullptr && str != nullptr) value = env->GetStringUTFChars(str, nullptr);
+    }
+
+    ~ScopedUtfChars() {
+        if (env != nullptr && str != nullptr && value != nullptr) {
+            env->ReleaseStringUTFChars(str, value);
+        }
+    }
+
+    const char *c_str() const { return value; }
+};
+
+static bool contains_app_zygote(const char *value) {
+    return value != nullptr && strstr(value, "app_zygote") != nullptr;
+}
+
+static const char *safe_str(const char *value) {
+    return value != nullptr ? value : "(null)";
+}
+
+static bool context_type_eq(const char *context, const char *type) {
+    if (context == nullptr || type == nullptr) return false;
+    if (strcmp(context, type) == 0) return true;
+
+    const char *p = strchr(context, ':');
+    if (p == nullptr) return false;
+    p = strchr(p + 1, ':');
+    if (p == nullptr) return false;
+
+    const char *type_start = p + 1;
+    const char *type_end = strchr(type_start, ':');
+    size_t type_len = type_end ? static_cast<size_t>(type_end - type_start) : strlen(type_start);
+    return strlen(type) == type_len && strncmp(type_start, type, type_len) == 0;
+}
+
+static bool is_dirty_selinux_rule(const char *scon, const char *tcon, const char *tclass,
+                                  const char *perm) {
+    if (tclass == nullptr || perm == nullptr) return false;
+
+    if (strcmp(tclass, "process") == 0 && strcmp(perm, "transition") == 0 &&
+        context_type_eq(scon, "shell") && context_type_eq(tcon, "su")) {
+        return true;
+    }
+
+    if (strcmp(tclass, "binder") == 0 && strcmp(perm, "call") == 0 &&
+        context_type_eq(scon, "adbd") && context_type_eq(tcon, "adbroot")) {
+        return true;
+    }
+
+    if (strcmp(tclass, "capability") == 0 && strcmp(perm, "sys_admin") == 0 &&
+        context_type_eq(scon, "fsck_untrusted") && context_type_eq(tcon, "fsck_untrusted")) {
+        return true;
+    }
+
+    return false;
+}
+
+static jboolean new_check_selinux_access(JNIEnv *env, jclass clazz, jstring scon, jstring tcon,
+                                         jstring tclass, jstring perm) {
+    ScopedUtfChars source(env, scon);
+    ScopedUtfChars target(env, tcon);
+    ScopedUtfChars klass(env, tclass);
+    ScopedUtfChars permission(env, perm);
+
+    if (is_dirty_selinux_rule(source.c_str(), target.c_str(), klass.c_str(), permission.c_str())) {
+        LOGI("filtered SELinux.checkSELinuxAccess %s %s %s %s", safe_str(source.c_str()),
+             safe_str(target.c_str()), safe_str(klass.c_str()), safe_str(permission.c_str()));
+        return JNI_FALSE;
+    }
+
+    if (orig_check_selinux_access == nullptr) return JNI_FALSE;
+    return orig_check_selinux_access(env, clazz, scon, tcon, tclass, perm);
+}
+
+static void hook_selinux_check_access(JNIEnv *env) {
+    JNINativeMethod method = {
+        "checkSELinuxAccess",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z",
+        reinterpret_cast<void *>(new_check_selinux_access),
+    };
+
+    g_hook->hook_jni_methods(env, "android/os/SELinux", {&method, 1});
+    orig_check_selinux_access = reinterpret_cast<CheckSELinuxAccessFn>(method.fnPtr);
+    if (orig_check_selinux_access != nullptr) {
+        LOGI("hooked android.os.SELinux.checkSELinuxAccess for app_zygote");
+    } else {
+        LOGW("failed to hook android.os.SELinux.checkSELinuxAccess");
+    }
+}
 
 ZygiskModule::ZygiskModule(int id, void *handle, void *entry)
     : id(id), handle(handle), entry{entry}, api{}, mod{nullptr} {
@@ -362,6 +463,10 @@ void ZygiskContext::app_specialize_pre() {
     }
 
     flags |= APP_SPECIALIZE;
+    if ((args.app->is_child_zygote != nullptr && *args.app->is_child_zygote) ||
+        contains_app_zygote(process)) {
+        hook_selinux_check_access(env);
+    }
     if (!skip_zygiskd) run_modules_pre();
 }
 
