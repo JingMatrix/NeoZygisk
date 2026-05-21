@@ -25,80 +25,117 @@ using CheckSELinuxAccessFn = jboolean (*)(JNIEnv *, jclass, jstring, jstring, js
 
 static CheckSELinuxAccessFn orig_check_selinux_access = nullptr;
 
-struct ScopedUtfChars {
+struct ScopedStringChars {
     JNIEnv *env = nullptr;
     jstring str = nullptr;
-    const char *value = nullptr;
+    const jchar *value = nullptr;
+    jsize length = 0;
 
-    ScopedUtfChars(JNIEnv *env, jstring str) : env(env), str(str) {
-        if (env != nullptr && str != nullptr) value = env->GetStringUTFChars(str, nullptr);
-    }
-
-    ~ScopedUtfChars() {
-        if (env != nullptr && str != nullptr && value != nullptr) {
-            env->ReleaseStringUTFChars(str, value);
+    ScopedStringChars(JNIEnv *env, jstring str) : env(env), str(str) {
+        if (env != nullptr && str != nullptr) {
+            length = env->GetStringLength(str);
+            value = env->GetStringChars(str, nullptr);
         }
     }
 
-    const char *c_str() const { return value; }
+    ~ScopedStringChars() {
+        if (env != nullptr && str != nullptr && value != nullptr) {
+            env->ReleaseStringChars(str, value);
+        }
+    }
+
+    bool valid() const { return value != nullptr; }
 };
 
 static bool contains_app_zygote(const char *value) {
     return value != nullptr && strstr(value, "app_zygote") != nullptr;
 }
 
-static const char *safe_str(const char *value) {
-    return value != nullptr ? value : "(null)";
+static bool chars_equal_ascii(const jchar *chars, jsize length, const char *ascii) {
+    if (chars == nullptr || ascii == nullptr) return false;
+
+    size_t ascii_len = strlen(ascii);
+    if (ascii_len != static_cast<size_t>(length)) return false;
+
+    for (jsize i = 0; i < length; ++i) {
+        if (chars[i] != static_cast<jchar>(ascii[i])) return false;
+    }
+    return true;
 }
 
-static bool context_type_eq(const char *context, const char *type) {
-    if (context == nullptr || type == nullptr) return false;
-    if (strcmp(context, type) == 0) return true;
-
-    const char *p = strchr(context, ':');
-    if (p == nullptr) return false;
-    p = strchr(p + 1, ':');
-    if (p == nullptr) return false;
-
-    const char *type_start = p + 1;
-    const char *type_end = strchr(type_start, ':');
-    size_t type_len = type_end ? static_cast<size_t>(type_end - type_start) : strlen(type_start);
-    return strlen(type) == type_len && strncmp(type_start, type, type_len) == 0;
+static bool string_equals_ascii(const ScopedStringChars &str, const char *ascii) {
+    return str.valid() && chars_equal_ascii(str.value, str.length, ascii);
 }
 
-static bool is_dirty_selinux_rule(const char *scon, const char *tcon, const char *tclass,
-                                  const char *perm) {
-    if (tclass == nullptr || perm == nullptr) return false;
+static bool context_type_eq_ascii(const ScopedStringChars &context, const char *type) {
+    if (!context.valid() || type == nullptr) return false;
+    if (string_equals_ascii(context, type)) return true;
 
-    if (strcmp(tclass, "process") == 0 && strcmp(perm, "transition") == 0 &&
-        context_type_eq(scon, "shell") && context_type_eq(tcon, "su")) {
-        return true;
+    int colons = 0;
+    jsize type_start = -1;
+    for (jsize i = 0; i < context.length; ++i) {
+        if (context.value[i] != ':') continue;
+        if (++colons == 2) {
+            type_start = i + 1;
+            break;
+        }
+    }
+    if (type_start < 0 || type_start >= context.length) return false;
+
+    jsize type_end = type_start;
+    while (type_end < context.length && context.value[type_end] != ':') {
+        type_end++;
     }
 
-    if (strcmp(tclass, "binder") == 0 && strcmp(perm, "call") == 0 &&
-        context_type_eq(scon, "adbd") && context_type_eq(tcon, "adbroot")) {
-        return true;
-    }
-
-    if (strcmp(tclass, "capability") == 0 && strcmp(perm, "sys_admin") == 0 &&
-        context_type_eq(scon, "fsck_untrusted") && context_type_eq(tcon, "fsck_untrusted")) {
-        return true;
-    }
-
-    return false;
+    return chars_equal_ascii(context.value + type_start, type_end - type_start, type);
 }
 
 static jboolean new_check_selinux_access(JNIEnv *env, jclass clazz, jstring scon, jstring tcon,
                                          jstring tclass, jstring perm) {
-    ScopedUtfChars source(env, scon);
-    ScopedUtfChars target(env, tcon);
-    ScopedUtfChars klass(env, tclass);
-    ScopedUtfChars permission(env, perm);
+    ScopedStringChars klass(env, tclass);
+    ScopedStringChars permission(env, perm);
 
-    if (is_dirty_selinux_rule(source.c_str(), target.c_str(), klass.c_str(), permission.c_str())) {
-        LOGI("filtered SELinux.checkSELinuxAccess %s %s %s %s", safe_str(source.c_str()),
-             safe_str(target.c_str()), safe_str(klass.c_str()), safe_str(permission.c_str()));
-        return JNI_FALSE;
+    enum DirtyRule {
+        DIRTY_NONE,
+        DIRTY_SHELL_SU_TRANSITION,
+        DIRTY_ADBD_ADBROOT_BINDER,
+        DIRTY_FSCK_SYS_ADMIN,
+    } rule = DIRTY_NONE;
+
+    if (string_equals_ascii(klass, "process") && string_equals_ascii(permission, "transition")) {
+        rule = DIRTY_SHELL_SU_TRANSITION;
+    } else if (string_equals_ascii(klass, "binder") && string_equals_ascii(permission, "call")) {
+        rule = DIRTY_ADBD_ADBROOT_BINDER;
+    } else if (string_equals_ascii(klass, "capability") &&
+               string_equals_ascii(permission, "sys_admin")) {
+        rule = DIRTY_FSCK_SYS_ADMIN;
+    }
+
+    if (rule != DIRTY_NONE) {
+        ScopedStringChars source(env, scon);
+        ScopedStringChars target(env, tcon);
+        bool filtered = false;
+
+        switch (rule) {
+        case DIRTY_SHELL_SU_TRANSITION:
+            filtered = context_type_eq_ascii(source, "shell") && context_type_eq_ascii(target, "su");
+            break;
+        case DIRTY_ADBD_ADBROOT_BINDER:
+            filtered =
+                context_type_eq_ascii(source, "adbd") && context_type_eq_ascii(target, "adbroot");
+            break;
+        case DIRTY_FSCK_SYS_ADMIN:
+            filtered = context_type_eq_ascii(source, "fsck_untrusted") &&
+                       context_type_eq_ascii(target, "fsck_untrusted");
+            break;
+        case DIRTY_NONE:
+            break;
+        }
+
+        if (filtered) {
+            LOGI("filtered SELinux.checkSELinuxAccess rule %d", rule);
+            return JNI_FALSE;
+        }
     }
 
     if (orig_check_selinux_access == nullptr) return JNI_FALSE;
