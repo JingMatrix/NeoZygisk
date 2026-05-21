@@ -17,146 +17,10 @@
 #include "files.hpp"
 #include "logging.hpp"
 #include "misc.hpp"
+#include "selinux_filter.hpp"
 #include "zygisk.hpp"
 
 using namespace std;
-
-using CheckSELinuxAccessFn = jboolean (*)(JNIEnv *, jclass, jstring, jstring, jstring, jstring);
-
-static CheckSELinuxAccessFn orig_check_selinux_access = nullptr;
-
-struct ScopedStringChars {
-    JNIEnv *env = nullptr;
-    jstring str = nullptr;
-    const jchar *value = nullptr;
-    jsize length = 0;
-
-    ScopedStringChars(JNIEnv *env, jstring str) : env(env), str(str) {
-        if (env != nullptr && str != nullptr) {
-            length = env->GetStringLength(str);
-            value = env->GetStringChars(str, nullptr);
-        }
-    }
-
-    ~ScopedStringChars() {
-        if (env != nullptr && str != nullptr && value != nullptr) {
-            env->ReleaseStringChars(str, value);
-        }
-    }
-
-    bool valid() const { return value != nullptr; }
-};
-
-static bool contains_app_zygote(const char *value) {
-    return value != nullptr && strstr(value, "app_zygote") != nullptr;
-}
-
-static bool chars_equal_ascii(const jchar *chars, jsize length, const char *ascii) {
-    if (chars == nullptr || ascii == nullptr) return false;
-
-    size_t ascii_len = strlen(ascii);
-    if (ascii_len != static_cast<size_t>(length)) return false;
-
-    for (jsize i = 0; i < length; ++i) {
-        if (chars[i] != static_cast<jchar>(ascii[i])) return false;
-    }
-    return true;
-}
-
-static bool string_equals_ascii(const ScopedStringChars &str, const char *ascii) {
-    return str.valid() && chars_equal_ascii(str.value, str.length, ascii);
-}
-
-static bool context_type_eq_ascii(const ScopedStringChars &context, const char *type) {
-    if (!context.valid() || type == nullptr) return false;
-    if (string_equals_ascii(context, type)) return true;
-
-    int colons = 0;
-    jsize type_start = -1;
-    for (jsize i = 0; i < context.length; ++i) {
-        if (context.value[i] != ':') continue;
-        if (++colons == 2) {
-            type_start = i + 1;
-            break;
-        }
-    }
-    if (type_start < 0 || type_start >= context.length) return false;
-
-    jsize type_end = type_start;
-    while (type_end < context.length && context.value[type_end] != ':') {
-        type_end++;
-    }
-
-    return chars_equal_ascii(context.value + type_start, type_end - type_start, type);
-}
-
-static jboolean new_check_selinux_access(JNIEnv *env, jclass clazz, jstring scon, jstring tcon,
-                                         jstring tclass, jstring perm) {
-    ScopedStringChars klass(env, tclass);
-    ScopedStringChars permission(env, perm);
-
-    enum DirtyRule {
-        DIRTY_NONE,
-        DIRTY_SHELL_SU_TRANSITION,
-        DIRTY_ADBD_ADBROOT_BINDER,
-        DIRTY_FSCK_SYS_ADMIN,
-    } rule = DIRTY_NONE;
-
-    if (string_equals_ascii(klass, "process") && string_equals_ascii(permission, "transition")) {
-        rule = DIRTY_SHELL_SU_TRANSITION;
-    } else if (string_equals_ascii(klass, "binder") && string_equals_ascii(permission, "call")) {
-        rule = DIRTY_ADBD_ADBROOT_BINDER;
-    } else if (string_equals_ascii(klass, "capability") &&
-               string_equals_ascii(permission, "sys_admin")) {
-        rule = DIRTY_FSCK_SYS_ADMIN;
-    }
-
-    if (rule != DIRTY_NONE) {
-        ScopedStringChars source(env, scon);
-        ScopedStringChars target(env, tcon);
-        bool filtered = false;
-
-        switch (rule) {
-        case DIRTY_SHELL_SU_TRANSITION:
-            filtered = context_type_eq_ascii(source, "shell") && context_type_eq_ascii(target, "su");
-            break;
-        case DIRTY_ADBD_ADBROOT_BINDER:
-            filtered =
-                context_type_eq_ascii(source, "adbd") && context_type_eq_ascii(target, "adbroot");
-            break;
-        case DIRTY_FSCK_SYS_ADMIN:
-            filtered = context_type_eq_ascii(source, "fsck_untrusted") &&
-                       context_type_eq_ascii(target, "fsck_untrusted");
-            break;
-        case DIRTY_NONE:
-            break;
-        }
-
-        if (filtered) {
-            LOGI("filtered SELinux.checkSELinuxAccess rule %d", rule);
-            return JNI_FALSE;
-        }
-    }
-
-    if (orig_check_selinux_access == nullptr) return JNI_FALSE;
-    return orig_check_selinux_access(env, clazz, scon, tcon, tclass, perm);
-}
-
-static void hook_selinux_check_access(JNIEnv *env) {
-    JNINativeMethod method = {
-        "checkSELinuxAccess",
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z",
-        reinterpret_cast<void *>(new_check_selinux_access),
-    };
-
-    g_hook->hook_jni_methods(env, "android/os/SELinux", {&method, 1});
-    orig_check_selinux_access = reinterpret_cast<CheckSELinuxAccessFn>(method.fnPtr);
-    if (orig_check_selinux_access != nullptr) {
-        LOGI("hooked android.os.SELinux.checkSELinuxAccess for app_zygote");
-    } else {
-        LOGW("failed to hook android.os.SELinux.checkSELinuxAccess");
-    }
-}
 
 ZygiskModule::ZygiskModule(int id, void *handle, void *entry)
     : id(id), handle(handle), entry{entry}, api{}, mod{nullptr} {
@@ -193,6 +57,7 @@ bool ZygiskModule::RegisterModuleImpl(ApiTable *api, long *module) {
         api->v2.getModuleDir = [](ZygiskModule *m) { return m->getModuleDir(); };
         api->v2.getFlags = [](auto) { return ZygiskModule::getFlags(); };
     }
+    // API v3 intentionally reuses the v2 table layout.
     if (api_version >= 4) {
         api->v4.pltHookCommit = []() { return lsplt::CommitHook(g_hook->cached_map_infos); };
         api->v4.pltHookRegister = [](dev_t dev, ino_t inode, const char *symbol, void *fn,
@@ -367,6 +232,10 @@ void ZygiskContext::sanitize_fds() {
 
     // Close all forbidden fds to prevent crashing
     auto dir = open_dir("/proc/self/fd");
+    if (!dir) {
+        LOGW("failed to open /proc/self/fd: %s", strerror(errno));
+        return;
+    }
     int dfd = dirfd(dir.get());
     for (dirent *entry; (entry = readdir(dir.get()));) {
         int fd = parse_int(entry->d_name);
@@ -458,7 +327,7 @@ void ZygiskContext::run_modules_post() {
         if (m.tryUnload()) modules_unloaded++;
     }
 
-    if (modules.size() > 0) {
+    if (!modules.empty()) {
         LOGV("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         if (modules.size() == modules_unloaded) clean_libc_trace();
         clean_linker_trace("jit-cache-zygisk", modules.size(), modules_unloaded, true);
@@ -500,9 +369,9 @@ void ZygiskContext::app_specialize_pre() {
     }
 
     flags |= APP_SPECIALIZE;
-    if ((args.app->is_child_zygote != nullptr && *args.app->is_child_zygote) ||
-        contains_app_zygote(process)) {
-        hook_selinux_check_access(env);
+    if (selinux_filter::is_app_zygote_process(
+            process, args.app->is_child_zygote != nullptr && *args.app->is_child_zygote)) {
+        selinux_filter::hook_check_access(env);
     }
     if (!skip_zygiskd) run_modules_pre();
 }
