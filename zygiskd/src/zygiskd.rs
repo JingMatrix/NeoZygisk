@@ -50,10 +50,10 @@ static CONTROLLER_SOCKET: OnceLock<String> = OnceLock::new();
 static DAEMON_SOCKET_PATH: OnceLock<String> = OnceLock::new();
 
 /// The main function for the zygiskd daemon.
-pub fn main() -> Result<()> {
+pub fn main(tmp_path: Option<&str>) -> Result<()> {
     info!("Welcome to NeoZygisk ({}) !", ZKSU_VERSION);
 
-    initialize_globals()?;
+    initialize_globals(tmp_path)?;
     let modules = load_modules()?;
     send_startup_info(&modules)?;
 
@@ -148,9 +148,13 @@ fn handle_threaded_action(
     }
 }
 
-/// Initializes global path variables from the environment.
-fn initialize_globals() -> Result<()> {
-    let tmp_path = std::env::var("TMP_PATH").context("TMP_PATH environment variable not set")?;
+/// Initializes global path variables from the daemon work directory.
+fn initialize_globals(tmp_path: Option<&str>) -> Result<()> {
+    let tmp_path = match tmp_path {
+        Some(path) if !path.is_empty() => path.to_owned(),
+        Some(_) => bail!("TMP_PATH daemon argument is empty"),
+        None => std::env::var("TMP_PATH").context("TMP_PATH environment variable not set")?,
+    };
     TMP_PATH.set(tmp_path).unwrap();
 
     CONTROLLER_SOCKET

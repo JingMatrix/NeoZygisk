@@ -66,6 +66,7 @@
 //!
 //! This binary has multiple modes of operation based on its command-line arguments:
 //! - No arguments: Starts the main `zygiskd` daemon.
+//! - `--workdir <path>`: Starts the main `zygiskd` daemon with an explicit work directory.
 //! - `companion <fd>`: Starts a companion process for a Zygisk module.
 //! - `version`: Prints the daemon version.
 //! - `root`: Detects and prints the current root implementation.
@@ -112,9 +113,18 @@ fn start() {
             root_impl::setup();
             println!("Detected root implementation: {:?}", root_impl::get());
         }
+        Some("--workdir") => {
+            if let Some(tmp_path) = args.get(2) {
+                if let Err(e) = main_daemon_entry(Some(tmp_path)) {
+                    error!("Zygiskd daemon failed: {:?}", e);
+                }
+            } else {
+                error!("Daemon: Missing work directory argument.");
+            }
+        }
         _ => {
-            // Default to starting the main daemon.
-            if let Err(e) = main_daemon_entry() {
+            // Default to starting the main daemon with the legacy environment-based workdir path.
+            if let Err(e) = main_daemon_entry(None) {
                 error!("Zygiskd daemon failed: {:?}", e);
             }
         }
@@ -123,13 +133,13 @@ fn start() {
 
 /// The main entry point for the Zygisk daemon.
 /// It sets up the environment and launches the core daemon logic.
-fn main_daemon_entry() -> anyhow::Result<()> {
+fn main_daemon_entry(tmp_path: Option<&str>) -> anyhow::Result<()> {
     // We must be in the root mount namespace to function correctly.
     mount::switch_mount_namespace(1)?;
     // Detect and globally set the root implementation.
     root_impl::setup();
     log::info!("Current root implementation: {:?}", root_impl::get());
-    zygiskd::main()
+    zygiskd::main(tmp_path)
 }
 
 fn main() {
