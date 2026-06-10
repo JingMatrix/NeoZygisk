@@ -41,3 +41,13 @@ To configure the DenyList for a specific application, use the appropriate settin
 > **Important Note for Magisk Users**
 >
 > The **`Enforce DenyList`** option in Magisk enables Magisk's *own* DenyList implementation. This is separate from NeoZygisk's functionality, is not guaranteed to hide all mount-related traces, and may conflict with NeoZygisk's hiding mechanisms. It is strongly recommended to leave this option disabled and rely solely on NeoZygisk's configuration.
+
+## KernelSU LKM late-load (jailbreak mode)
+
+On KernelSU setups where the kernel module is loaded after boot (`ksud late-load`, sometimes called jailbreak mode), `post-fs-data.sh` is **not** executed. NeoZygisk ships a `late-load.sh` script for this path: it bootstraps the ptrace monitor via `post-fs-data.sh` when needed, then soft-reboots zygote so injection applies to new processes.
+
+This script runs automatically when you trigger late-load from the KernelSU manager. No manual setup is required after flashing NeoZygisk.
+
+> **Note**
+>
+> The zygote restart causes a brief System UI reload (similar to a soft reboot). Apps already running before late-load must be restarted to receive Zygisk injection.
