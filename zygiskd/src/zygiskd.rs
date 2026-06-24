@@ -80,6 +80,35 @@ pub fn main() -> Result<()> {
 
 /// Handles a single incoming connection from Zygisk.
 fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result<()> {
+    // Kernel-verified peer admission.
+    //
+    // Every connection the daemon legitimately accepts is opened while the caller is
+    // still root or system at connect() time:
+    //   - zygote (uid 0) during injection and the whole pre-specialization window
+    //     (ReadModules, GetProcessFlags, CacheMountNamespace, UpdateMountNamespace via
+    //     the hooked unshare(), and the companion request);
+    //   - system_server (uid 1000) on the late-injection path;
+    //   - the root tracer (uid 0) for ZygoteRestart.
+    // The loader makes no daemon connection after a process drops to its app uid, and the
+    // app<->companion channel is a handed-off fd that never re-enters this accept path. So
+    // any connection presenting another uid is illegitimate. SO_PEERCRED is captured by the
+    // kernel at connect() time and cannot be spoofed, so we reject such peers here.
+    const AID_ROOT: u32 = 0;
+    const AID_SYSTEM: u32 = 1000;
+    match rustix::net::sockopt::socket_peercred(&stream) {
+        Ok(cred) => {
+            let uid = cred.uid.as_raw();
+            if uid != AID_ROOT && uid != AID_SYSTEM {
+                warn!("Rejecting daemon connection from untrusted peer: {:?}", cred);
+                return Ok(());
+            }
+        }
+        Err(e) => {
+            warn!("Rejecting daemon connection: cannot read peer credentials: {}", e);
+            return Ok(());
+        }
+    }
+
     let action = stream.read_u8()?;
     let action = DaemonSocketAction::try_from(action)
         .with_context(|| format!("Invalid daemon action code: {}", action))?;

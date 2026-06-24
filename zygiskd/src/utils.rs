@@ -160,7 +160,14 @@ pub fn unix_listener_from_path(path: &str) -> Result<UnixListener> {
     let socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
     bind(&socket, &addr)?;
     listen(&socket, 10)?; // Backlog of 10
+    // Label the socket so the zygote domain may connect on enforcing-SELinux devices.
     Command::new("chcon").arg("u:object_r:zygisk_file:s0").arg(path).status()?;
+    // World-accessible (0777) — this matches the permission observed on the control socket
+    // of shipped NeoZygisk releases on-device. The open DAC mode is intentional and not a
+    // gate: on enforcing devices access is controlled by the SELinux `zygisk_file` label,
+    // and in all cases the daemon authenticates peers with SO_PEERCRED (see
+    // `handle_connection` in zygiskd.rs), rejecting any connector that is not root or
+    // system. It also lets a late-injected system_server (AID_SYSTEM) reach the socket.
     Command::new("chmod").arg("777").arg(path).status()?;
     Ok(UnixListener::from(socket))
 }
