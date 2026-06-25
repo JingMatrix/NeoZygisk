@@ -65,8 +65,10 @@
 //! 10. **Direct Connection:** The companion receives the file descriptor and now holds the other end of the app's original socket. It can now communicate directly with the app. The daemon's brokering job is complete, and it is no longer involved in their conversation. This handoff is efficient and seamless from the app's perspective.
 //!
 //! This binary has multiple modes of operation based on its command-line arguments:
-//! - No arguments: Starts the main `zygiskd` daemon.
-//! - `--workdir <path>`: Starts the main `zygiskd` daemon with an explicit work directory.
+//! - No arguments: Starts the main `zygiskd` daemon, taking its work directory
+//!   from the `TMP_PATH` environment variable.
+//! - `--workdir <path>`: Starts the main `zygiskd` daemon with an explicit work
+//!   directory, bypassing the `TMP_PATH` environment variable.
 //! - `companion <fd>`: Starts a companion process for a Zygisk module.
 //! - `version`: Prints the daemon version.
 //! - `root`: Detects and prints the current root implementation.
@@ -113,18 +115,16 @@ fn start() {
             root_impl::setup();
             println!("Detected root implementation: {:?}", root_impl::get());
         }
-        Some("--workdir") => {
-            if let Some(tmp_path) = args.get(2) {
-                if let Err(e) = main_daemon_entry(Some(tmp_path)) {
-                    error!("Zygiskd daemon failed: {:?}", e);
-                }
-            } else {
-                error!("Daemon: Missing work directory argument.");
-            }
-        }
         _ => {
-            // Default to starting the main daemon with the legacy environment-based workdir path.
-            if let Err(e) = main_daemon_entry(None) {
+            // Default mode: the main daemon. It accepts an optional `--workdir <path>`
+            // option carrying the work directory; absent that, it falls back to the
+            // TMP_PATH environment variable (see `initialize_globals`).
+            let workdir = args
+                .iter()
+                .position(|arg| arg == "--workdir")
+                .and_then(|i| args.get(i + 1))
+                .map(String::as_str);
+            if let Err(e) = main_daemon_entry(workdir) {
                 error!("Zygiskd daemon failed: {:?}", e);
             }
         }
