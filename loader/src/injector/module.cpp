@@ -7,6 +7,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <lsplt.hpp>
@@ -16,6 +17,7 @@
 #include "files.hpp"
 #include "logging.hpp"
 #include "misc.hpp"
+#include "selinux_filter.hpp"
 #include "zygisk.hpp"
 
 using namespace std;
@@ -55,6 +57,7 @@ bool ZygiskModule::RegisterModuleImpl(ApiTable *api, long *module) {
         api->v2.getModuleDir = [](ZygiskModule *m) { return m->getModuleDir(); };
         api->v2.getFlags = [](auto) { return ZygiskModule::getFlags(); };
     }
+    // API v3 intentionally reuses the v2 table layout.
     if (api_version >= 4) {
         api->v4.pltHookCommit = []() { return lsplt::CommitHook(g_hook->cached_map_infos); };
         api->v4.pltHookRegister = [](dev_t dev, ino_t inode, const char *symbol, void *fn,
@@ -229,6 +232,10 @@ void ZygiskContext::sanitize_fds() {
 
     // Close all forbidden fds to prevent crashing
     auto dir = open_dir("/proc/self/fd");
+    if (!dir) {
+        LOGW("failed to open /proc/self/fd: %s", strerror(errno));
+        return;
+    }
     int dfd = dirfd(dir.get());
     for (dirent *entry; (entry = readdir(dir.get()));) {
         int fd = parse_int(entry->d_name);
@@ -320,7 +327,7 @@ void ZygiskContext::run_modules_post() {
         if (m.tryUnload()) modules_unloaded++;
     }
 
-    if (modules.size() > 0) {
+    if (!modules.empty()) {
         LOGV("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         if (modules.size() == modules_unloaded) clean_libc_trace();
         clean_linker_trace("jit-cache-zygisk", modules.size(), modules_unloaded, true);
@@ -362,6 +369,10 @@ void ZygiskContext::app_specialize_pre() {
     }
 
     flags |= APP_SPECIALIZE;
+    if (selinux_filter::is_app_zygote_process(
+            process, args.app->is_child_zygote != nullptr && *args.app->is_child_zygote)) {
+        selinux_filter::hook_check_access(env);
+    }
     if (!skip_zygiskd) run_modules_pre();
 }
 

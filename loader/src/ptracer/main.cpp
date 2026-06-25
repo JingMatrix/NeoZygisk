@@ -75,6 +75,10 @@ static int handle_version();
 int main(int argc, char **argv) {
     // This initialization is for the daemon's internal logic, not for CLI output.
     zygiskd::Init(kWorkDirectory);
+    // Export TMP_PATH so child `zygiskd` execs inherit it. Done here (not in
+    // zygiskd::Init) to keep zygote's environment clean when libzygisk.so is
+    // injected — otherwise every specialized app inherits the marker.
+    setenv("TMP_PATH", kWorkDirectory, 0);
 
     if (argc < 2) {
         print_usage(argv[0]);
