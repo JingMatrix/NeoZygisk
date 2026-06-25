@@ -132,12 +132,20 @@ bool AppMonitor::prepare_environment() {
     return true;
 }
 
-void AppMonitor::run() {
-    socket_handler_.Init();
-    ptrace_handler_.Init();
+void AppMonitor::run(bool socket_loop, bool ptrace_loop) {
+    if (!socket_loop && !ptrace_loop) {
+        LOGD("No moniter handler actived, exiting...");
+        return;
+    }
     event_loop_.Init();
-    event_loop_.RegisterHandler(socket_handler_, EPOLLIN | EPOLLET);
-    event_loop_.RegisterHandler(ptrace_handler_, EPOLLIN | EPOLLET);
+    if (socket_loop) {
+        socket_handler_.Init();
+        event_loop_.RegisterHandler(socket_handler_, EPOLLIN | EPOLLET);
+    }
+    if (ptrace_loop) {
+        ptrace_handler_.Init();
+        event_loop_.RegisterHandler(ptrace_handler_, EPOLLIN | EPOLLET);
+    }
     event_loop_.Loop();
 }
 
@@ -587,7 +595,7 @@ bool AppMonitor::SigChldHandler::handleExecEvent(int pid, int &status) {
             // Fork and execute the external injector daemon.
             auto p = fork_dont_care();
             if (p == 0) {
-                execl(tracer, basename(tracer), "trace", std::to_string(pid).c_str(), "--restart",
+                execl(tracer, basename(tracer), "trace", std::to_string(pid).c_str(), "--spawn",
                       nullptr);
                 PLOGE("execute injector daemon");
                 kill(pid, SIGKILL);

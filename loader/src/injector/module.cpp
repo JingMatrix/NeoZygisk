@@ -320,7 +320,7 @@ void ZygiskContext::run_modules_post() {
         if (m.tryUnload()) modules_unloaded++;
     }
 
-    if (modules.size() > 0) {
+    if (modules.size() > 0 && g_hook != nullptr) {
         LOGV("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         if (modules.size() == modules_unloaded) clean_libc_trace();
         clean_linker_trace("jit-cache-zygisk", modules.size(), modules_unloaded, true);
