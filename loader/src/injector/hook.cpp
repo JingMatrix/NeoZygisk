@@ -1,3 +1,4 @@
+#include <cstring>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <sched.h>
@@ -398,6 +399,23 @@ void HookContext::hook_zygote_jni() {
         return;
     }
     hook_jni_methods(env, kZygote, zygote_methods);
+
+    // Each Zygote entrypoint has several version variants in the table and only one
+    // resolves per device. If none of a method's variants resolves (e.g. a new OS
+    // changed its native signature), that entrypoint is left unhooked and injection
+    // silently breaks for the affected process class. Fail loudly instead.
+    for (const char *name :
+         {"nativeForkAndSpecialize", "nativeSpecializeAppProcess", "nativeForkSystemServer"}) {
+        bool hooked = false;
+        for (const auto &method : zygote_methods) {
+            if (method.fnPtr != nullptr && strcmp(method.name, name) == 0) {
+                hooked = true;
+                break;
+            }
+        }
+        if (!hooked)
+            LOGE("no matching signature for %s; injection will not work on this build", name);
+    }
 }
 
 void HookContext::restore_zygote_hook(JNIEnv *env) {
