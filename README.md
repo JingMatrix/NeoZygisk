@@ -12,6 +12,18 @@ NeoZygisk is engineered with four key objectives:
 3.  **Trace Cleaning:** Guarantees the complete removal of its injection traces from application processes once all Zygisk modules are unloaded.
 4.  **Advanced Stealth:** Employs a sophisticated DenyList to provide granular control over root and module visibility, effectively hiding the traces of your root solution.
 
+## Late-loaded KernelSU sessions
+
+A hardware-tested Samsung lifecycle for KernelSU sessions acquired after Android
+has already booted is documented in
+[Post-boot KernelSU sessions on Samsung](docs/postboot-kernelsu-samsung.md).
+
+The tested path does not inject the already-running zygote. It attaches one
+monitor to init, waits for a user-initiated KernelSU Manager Soft Reboot, and
+then verifies the new zygote and native generation. The document also records
+the DEFEX runtime-path constraint, the failure caused by a targeted zygote
+restart, and the full-reboot rule after provider updates.
+
 ## The DenyList Explained
 
 Modern systemless root solutions operate by creating overlay filesystems using [`mount`](https://man7.org/linux/man-pages/man8/mount.8.html) rather than directly modifying system partitions. The DenyList is a core feature designed to hide these modifications by precisely controlling the [mount namespaces](https://man7.org/linux/man-pages/man7/mount_namespaces.7.html) for each application process.
