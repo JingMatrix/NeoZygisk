@@ -1,5 +1,6 @@
 #include "selinux_filter.hpp"
 
+#include <errno.h>
 #include <string.h>
 
 #include <atomic>
@@ -13,6 +14,37 @@ using CheckSELinuxAccessFn = jboolean (*)(JNIEnv *, jclass, jstring, jstring, js
 
 static std::atomic_bool hook_in_progress{false};
 static std::atomic<CheckSELinuxAccessFn> orig_check_selinux_access{nullptr};
+
+// LSPosed's AppZygote detector probes for adb_root by writing directly to
+// selinuxfs via Os.write, bypassing android.os.SELinux.checkSELinuxAccess.
+// i.c("u:r:adbroot:s0") walks a three-step fallback ladder, each step an
+// Os.write to a different node:
+//
+//   step 1  /sys/fs/selinux/context          "u:r:adbroot:s0"                       (15 bytes)
+//   step 2  /sys/fs/selinux/access           "u:r:adbroot:s0 u:r:adbroot:s0 0"      (33 bytes)
+//   step 3  /proc/self/attr/current          "u:r:adbroot:s0"                       (15 bytes, setcon)
+//
+// Step 1 already fails with EINVAL on a real device (adbroot is not a context
+// you can validate), so the detector falls into step 2 regardless of us. Step 2
+// is the actual signal: the 33-byte "scon tcon perm" payload to the access
+// node succeeds iff the adbroot domain exists in the loaded policy. To hide
+// adb_root we must make step 2 fail with EINVAL too, which then drives the
+// detector into step 3 (setcon) — and that also returns EINVAL — so i.c()
+// ultimately returns false and "found adb_root" is never appended.
+//
+// We hook libcore.io.Linux.write(FileDescriptor, byte[], int, int) and fake
+// EINVAL when the payload matches either the 15-byte context literal or the
+// 33-byte access-node composite. Fast path: a single length dispatch.
+using OsWriteBytesFn = jint (*)(JNIEnv *, jclass, jobject, jobject, jint, jint);
+static std::atomic<OsWriteBytesFn> orig_os_write{nullptr};
+static std::atomic_bool os_write_hook_in_progress{false};
+
+constexpr const char kAdbrootPayload[] = "u:r:adbroot:s0";
+constexpr jsize kAdbrootPayloadLen = static_cast<jsize>(sizeof(kAdbrootPayload) - 1);
+// Composite payload written to /sys/fs/selinux/access: "<ctx> <ctx> <perm>"
+// where ctx == "u:r:adbroot:s0" and perm == "0" (the int i.c passes in).
+constexpr const char kAdbrootAccessPayload[] = "u:r:adbroot:s0 u:r:adbroot:s0 0";
+constexpr jsize kAdbrootAccessPayloadLen = static_cast<jsize>(sizeof(kAdbrootAccessPayload) - 1);
 
 struct ScopedStringChars {
     JNIEnv *env = nullptr;
@@ -215,6 +247,134 @@ static jboolean new_check_selinux_access(JNIEnv *env, jclass clazz, jstring scon
     return orig(env, clazz, scon, tcon, tclass, perm);
 }
 
+// Hook for libcore.io.Linux.writeBytes(FileDescriptor, Object, int, int).
+//
+// Safety is the priority here: Os.write is one of the hottest syscalls in
+// app_zygote (IPC, logging, sockets, ...), so the hook must NEVER perturb a
+// write that isn't the adbroot probe. Three layers of gating, cheapest first:
+//
+//   1. Length prefilter: only byteCount == 15 or 33 are even candidates.
+//      Everything else (the overwhelming majority) falls straight through.
+//   2. Safe buffer read: validate the array length, use GetByteArrayRegion
+//      (which never throws on in-bounds reads but does set a pending exception
+//      on type/length mismatch), and bail to the original on ANY anomaly.
+//   3. Exact content match against the constant payload.
+//
+// Only if all three gates pass do we synthesize EINVAL. This guarantees we
+// cannot accidentally throw on an unrelated 15/33-byte write (the bug that
+// previously crashed app_zygote and triggered the "Service connection timedout"
+// warning).
+static jint new_os_write(JNIEnv *env, jclass clazz, jobject fd, jobject buffer, jint byte_offset,
+                         jint byte_count) {
+    do {
+        if (__builtin_expect(byte_offset != 0, 1)) break;  // common: offset != 0
+        if (buffer == nullptr) break;
+        const char *match = nullptr;
+        jsize match_len = 0;
+        if (byte_count == kAdbrootPayloadLen) {
+            match = kAdbrootPayload;
+            match_len = kAdbrootPayloadLen;
+        } else if (byte_count == kAdbrootAccessPayloadLen) {
+            match = kAdbrootAccessPayload;
+            match_len = kAdbrootAccessPayloadLen;
+        } else {
+            break;
+        }
+
+        // Confirm `buffer` is really a byte[] and large enough. If anything
+        // looks off, refuse to filter and let the original write proceed.
+        jclass bytes_class = env->FindClass("[B");
+        if (bytes_class == nullptr) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            break;
+        }
+        bool is_bytes = env->IsInstanceOf(buffer, bytes_class) == JNI_TRUE;
+        env->DeleteLocalRef(bytes_class);
+        if (!is_bytes) break;
+
+        jsize arr_len = env->GetArrayLength(static_cast<jbyteArray>(buffer));
+        if (arr_len < match_len) break;
+
+        jbyte buf[33];
+        env->GetByteArrayRegion(static_cast<jbyteArray>(buffer), 0, match_len, buf);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            break;
+        }
+        if (memcmp(buf, match, match_len) != 0) break;
+
+        // All gates passed: this is the adbroot probe. Synthesize EINVAL.
+        jclass ex_class = env->FindClass("android/system/ErrnoException");
+        if (ex_class == nullptr) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            break;
+        }
+        jmethodID ctor = env->GetMethodID(ex_class, "<init>", "(Ljava/lang/String;I)V");
+        if (ctor == nullptr) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            env->DeleteLocalRef(ex_class);
+            break;
+        }
+        jstring sys = env->NewStringUTF("write");
+        jobject ex = env->NewObject(ex_class, ctor, sys, EINVAL);
+        env->DeleteLocalRef(ex_class);
+        if (ex == nullptr) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            break;
+        }
+        // ThrowNew would need a message ctor; we already built the exact
+        // ErrnoException("write", EINVAL) the kernel path produces.
+        env->Throw(reinterpret_cast<jthrowable>(ex));
+        LOGI("filtered adbroot probe (%d bytes)", match_len);
+        return -1;
+    } while (false);
+
+    OsWriteBytesFn orig = orig_os_write.load(std::memory_order_acquire);
+    if (orig == nullptr) {
+        // Hook was never installed successfully; surface EBADF just like Os.write
+        // does when called with an invalid descriptor, rather than crashing.
+        jclass ex_class = env->FindClass("android/system/ErrnoException");
+        if (ex_class != nullptr) {
+            env->ThrowNew(ex_class, "write");
+            env->DeleteLocalRef(ex_class);
+        }
+        return -1;
+    }
+    return orig(env, clazz, fd, buffer, byte_offset, byte_count);
+}
+
+static void hook_os_write(JNIEnv *env) {
+    if (orig_os_write.load(std::memory_order_acquire) != nullptr) return;
+
+    bool expected = false;
+    if (!os_write_hook_in_progress.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        return;
+    }
+
+    // The native backing of android.system.Os.write is
+    // libcore.io.Linux.writeBytes(FileDescriptor, Object, int, int), NOT
+    // "write" (which is a plain Java wrapper and would be skipped by
+    // hook_jni_methods' NATIVE modifier check, leaving fnPtr null and the
+    // hook silently uninstalled). The buffer arg is typed Object in the JNI
+    // signature but in practice always a byte[]; we treat it as jbyteArray.
+    JNINativeMethod method = {
+        "writeBytes",
+        "(Ljava/io/FileDescriptor;Ljava/lang/Object;II)I",
+        reinterpret_cast<void *>(new_os_write),
+    };
+
+    g_hook->hook_jni_methods(env, "libcore/io/Linux", {&method, 1});
+    OsWriteBytesFn orig = reinterpret_cast<OsWriteBytesFn>(method.fnPtr);
+    if (orig != nullptr && orig != new_os_write) {
+        orig_os_write.store(orig, std::memory_order_release);
+        LOGI("hooked libcore.io.Linux.writeBytes for app_zygote");
+    } else {
+        LOGW("failed to hook libcore.io.Linux.writeBytes");
+        os_write_hook_in_progress.store(false, std::memory_order_release);
+    }
+}
+
 void hook_check_access(JNIEnv *env) {
     if (orig_check_selinux_access.load(std::memory_order_acquire) != nullptr) return;
 
@@ -239,6 +399,11 @@ void hook_check_access(JNIEnv *env) {
         LOGW("failed to hook android.os.SELinux.checkSELinuxAccess");
         hook_in_progress.store(false, std::memory_order_release);
     }
+
+    // LSPosed's detector reaches selinuxfs directly via Os.write, which the
+    // SELinux.checkSELinuxAccess hook above cannot observe. Install the
+    // Os.write hook as well so the adbroot probe can be filtered.
+    hook_os_write(env);
 }
 
 }  // namespace selinux_filter

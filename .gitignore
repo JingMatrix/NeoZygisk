@@ -4,3 +4,4 @@
 build
 local.properties
 Cargo.lock
+.gradle-user
