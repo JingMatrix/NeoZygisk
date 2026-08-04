@@ -184,7 +184,18 @@ bool inject_on_main(int pid, const char *lib_path) {
     }
 
     // Backup the current registers before we start making remote calls.
+    // It is vital we keep the original PSTATE intact in the backup, so
+    // the original executable can securely validate its own BTI pad upon final resume.
     memcpy(&backup, &regs, sizeof(regs));
+
+#if defined(__aarch64__)
+    // Clear the BTYPE field (bits 10 and 11) in PSTATE.
+    // The previous indirect branch from the linker set BTYPE to 0b11.
+    // If we jump into BTI-protected bionic libraries (like libdl.so) with BTYPE=0b11,
+    // the CPU will throw a Branch Target Exception (SIGILL).
+    regs.pstate &= ~(3ULL << 10);
+#endif
+
     map = MapInfo::Scan(std::to_string(pid));  // Re-scan maps as they may have changed.
     auto local_map = MapInfo::Scan();
     auto libc_return_addr = find_module_return_addr(map, "libc.so");

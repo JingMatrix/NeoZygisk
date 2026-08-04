@@ -33,9 +33,11 @@ val workDirectory: String by rootProject.extra
 val commitHash: String by rootProject.extra
 val updateJson: String by rootProject.extra
 
-android.buildFeatures {
-    androidResources = false
-    buildConfig = false
+android {
+    buildFeatures {
+        buildConfig = false
+    }
+    androidResources.enable = false
 }
 
 androidComponents.onVariants { variant ->
@@ -50,7 +52,7 @@ androidComponents.onVariants { variant ->
         group = "module"
         dependsOn(
             ":loader:assemble$variantCapped",
-            ":zygiskd:buildAndStrip",
+            ":zygiskd:buildAndStrip$variantCapped",
         )
         into(moduleDir)
         from("${rootProject.projectDir}/README.md")
@@ -83,11 +85,11 @@ androidComponents.onVariants { variant ->
             filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
         }
         into("bin") {
-            from(project(":zygiskd").layout.buildDirectory.file("rustJniLibs/android"))
+            from(project(":zygiskd").layout.buildDirectory.dir("intermediates/rust/$buildTypeLowered/jniLibs"))
             include("**/zygiskd")
         }
         into("lib") {
-            from(project(":loader").layout.buildDirectory.file("intermediates/stripped_native_libs/$variantLowered/strip${variantCapped}DebugSymbols/out/lib"))
+            from(project(":loader").layout.buildDirectory.dir("intermediates/stripped_native_libs/$variantLowered/strip${variantCapped}DebugSymbols/out/lib"))
         }
 
         doLast {
@@ -106,7 +108,7 @@ androidComponents.onVariants { variant ->
         group = "module"
         dependsOn(prepareModuleFilesTask)
         archiveFileName.set(zipFileName)
-        destinationDirectory.set(layout.buildDirectory.file("outputs/release").get().asFile)
+        destinationDirectory.set(layout.buildDirectory.dir("outputs/release").get().asFile)
         from(moduleDir)
     }
 
@@ -120,15 +122,15 @@ androidComponents.onVariants { variant ->
         group = "module"
         dependsOn(pushTask)
         doLast {
-            exec {
+            providers.exec {
                 commandLine(
                     "adb", "shell", "echo",
                     "/data/adb/apd module install /data/local/tmp/$zipFileName",
                     "> /data/local/tmp/install.sh"
                 )
-            }
-            exec { commandLine("adb", "shell", "chmod", "755", "/data/local/tmp/install.sh") }
-            exec { commandLine("adb", "shell", "su", "-c", "/data/local/tmp/install.sh") }
+            }.result.get()
+            providers.exec { commandLine("adb", "shell", "chmod", "755", "/data/local/tmp/install.sh") }.result.get()
+            providers.exec { commandLine("adb", "shell", "su", "-c", "/data/local/tmp/install.sh") }.result.get()
         }
     }
 
@@ -136,15 +138,15 @@ androidComponents.onVariants { variant ->
         group = "module"
         dependsOn(pushTask)
         doLast {
-            exec {
+            providers.exec {
                 commandLine(
                     "adb", "shell", "echo",
                     "/data/adb/ksud module install /data/local/tmp/$zipFileName",
                     "> /data/local/tmp/install.sh"
                 )
-            }
-            exec { commandLine("adb", "shell", "chmod", "755", "/data/local/tmp/install.sh") }
-            exec { commandLine("adb", "shell", "su", "-c", "/data/local/tmp/install.sh") }
+            }.result.get()
+            providers.exec { commandLine("adb", "shell", "chmod", "755", "/data/local/tmp/install.sh") }.result.get()
+            providers.exec { commandLine("adb", "shell", "su", "-c", "/data/local/tmp/install.sh") }.result.get()
         }
     }
 

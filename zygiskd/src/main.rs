@@ -65,7 +65,10 @@
 //! 10. **Direct Connection:** The companion receives the file descriptor and now holds the other end of the app's original socket. It can now communicate directly with the app. The daemon's brokering job is complete, and it is no longer involved in their conversation. This handoff is efficient and seamless from the app's perspective.
 //!
 //! This binary has multiple modes of operation based on its command-line arguments:
-//! - No arguments: Starts the main `zygiskd` daemon.
+//! - No arguments: Starts the main `zygiskd` daemon, taking its work directory
+//!   from the `TMP_PATH` environment variable.
+//! - `--workdir <path>`: Starts the main `zygiskd` daemon with an explicit work
+//!   directory, bypassing the `TMP_PATH` environment variable.
 //! - `companion <fd>`: Starts a companion process for a Zygisk module.
 //! - `version`: Prints the daemon version.
 //! - `root`: Detects and prints the current root implementation.
@@ -113,8 +116,15 @@ fn start() {
             println!("Detected root implementation: {:?}", root_impl::get());
         }
         _ => {
-            // Default to starting the main daemon.
-            if let Err(e) = main_daemon_entry() {
+            // Default mode: the main daemon. It accepts an optional `--workdir <path>`
+            // option carrying the work directory; absent that, it falls back to the
+            // TMP_PATH environment variable (see `initialize_globals`).
+            let workdir = args
+                .iter()
+                .position(|arg| arg == "--workdir")
+                .and_then(|i| args.get(i + 1))
+                .map(String::as_str);
+            if let Err(e) = main_daemon_entry(workdir) {
                 error!("Zygiskd daemon failed: {:?}", e);
             }
         }
@@ -123,13 +133,13 @@ fn start() {
 
 /// The main entry point for the Zygisk daemon.
 /// It sets up the environment and launches the core daemon logic.
-fn main_daemon_entry() -> anyhow::Result<()> {
+fn main_daemon_entry(tmp_path: Option<&str>) -> anyhow::Result<()> {
     // We must be in the root mount namespace to function correctly.
     mount::switch_mount_namespace(1)?;
     // Detect and globally set the root implementation.
     root_impl::setup();
     log::info!("Current root implementation: {:?}", root_impl::get());
-    zygiskd::main()
+    zygiskd::main(tmp_path)
 }
 
 fn main() {

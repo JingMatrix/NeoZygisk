@@ -39,15 +39,21 @@ jobs:
           rustup target add i686-linux-android
           rustup target add armv7-linux-androideabi
 
+      - name: Install cargo-ndk
+        # The zygiskd build invokes `cargo ndk` to cross-compile the daemon.
+        # Intentionally unpinned: the build uses the `--platform` flag, which is
+        # stable across cargo-ndk releases. See the commit message for the caveat.
+        run: cargo install cargo-ndk --locked
+
       - name: Setup Ccache for faster builds
         uses: hendrikmuhs/ccache-action@v1
         with:
-          key: ${{ github.job }}-${{ runner.os }}-${{ hashFiles('**/build.gradle.kts', '**/gradle.properties') }}
+          key: ${{ github.job }}-${{ runner.os }}-${{ hashFiles('**/build.gradle.kts') }}
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: zygiskd/src -> ../build/intermediates/rust
+          workspaces: zygiskd -> build/rust/target
 
       # ====================================================================
       # 2. CONFIGURE AND BUILD
