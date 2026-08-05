@@ -39,6 +39,24 @@ using OsWriteBytesFn = jint (*)(JNIEnv *, jclass, jobject, jobject, jint, jint);
 static std::atomic<OsWriteBytesFn> orig_os_write{nullptr};
 static std::atomic_bool os_write_hook_in_progress{false};
 
+// Cached JNI references for android.system.ErrnoException, resolved ONCE at
+// hook-install time and reused on the hot path. Os.write is one of the most
+// frequently called JNI methods in app_zygote (IPC, logging, sockets), so
+// calling FindClass/GetMethodID inside the hook proper would dominate the
+// cost of the entire write and (under contention on the class-loading lock)
+// can stall app_zygote initialization long enough to exceed the detector's
+// 5s bindIsolatedService timeout, surfacing as "app zygote crashed?".
+// GlobalRefs are valid for the lifetime of the process and survive the
+// fork from zygote into app_zygote, so caching is safe here.
+static std::atomic<jclass> errno_exception_class{nullptr};
+static std::atomic<jmethodID> errno_exception_ctor{nullptr};
+
+// Reentrancy guard: in principle the hook does no I/O of its own, but JNI
+// calls can themselves take locks that race with logging threads issuing
+// Os.write. A thread-local flag is essentially free and turns any such
+// accidental recursion into a passthrough.
+static thread_local bool in_os_write_hook = false;
+
 constexpr const char kAdbrootPayload[] = "u:r:adbroot:s0";
 constexpr jsize kAdbrootPayloadLen = static_cast<jsize>(sizeof(kAdbrootPayload) - 1);
 // Composite payload written to /sys/fs/selinux/access: "<ctx> <ctx> <perm>"
@@ -266,6 +284,12 @@ static jboolean new_check_selinux_access(JNIEnv *env, jclass clazz, jstring scon
 // warning).
 static jint new_os_write(JNIEnv *env, jclass clazz, jobject fd, jobject buffer, jint byte_offset,
                          jint byte_count) {
+    // Guard against accidental reentry from any JNI internal logging.
+    if (__builtin_expect(in_os_write_hook, 0)) {
+        OsWriteBytesFn orig = orig_os_write.load(std::memory_order_acquire);
+        return orig ? orig(env, clazz, fd, buffer, byte_offset, byte_count) : -1;
+    }
+
     do {
         if (__builtin_expect(byte_offset != 0, 1)) break;  // common: offset != 0
         if (buffer == nullptr) break;
@@ -281,49 +305,36 @@ static jint new_os_write(JNIEnv *env, jclass clazz, jobject fd, jobject buffer, 
             break;
         }
 
-        // Confirm `buffer` is really a byte[] and large enough. If anything
-        // looks off, refuse to filter and let the original write proceed.
-        jclass bytes_class = env->FindClass("[B");
-        if (bytes_class == nullptr) {
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            break;
-        }
-        bool is_bytes = env->IsInstanceOf(buffer, bytes_class) == JNI_TRUE;
-        env->DeleteLocalRef(bytes_class);
-        if (!is_bytes) break;
-
+        // writeBytes' Object arg is, by contract in libcore.io.Linux, only ever
+        // a byte[] (its public `write` wrapper accepts byte[] and forwards it).
+        // So no IsInstanceOf / FindClass("[B") is needed here — a big win on
+        // the hot path. We still bound the region read defensively.
         jsize arr_len = env->GetArrayLength(static_cast<jbyteArray>(buffer));
         if (arr_len < match_len) break;
 
         jbyte buf[33];
         env->GetByteArrayRegion(static_cast<jbyteArray>(buffer), 0, match_len, buf);
-        if (env->ExceptionCheck()) {
+        if (__builtin_expect(env->ExceptionCheck(), 0)) {
             env->ExceptionClear();
             break;
         }
         if (memcmp(buf, match, match_len) != 0) break;
 
-        // All gates passed: this is the adbroot probe. Synthesize EINVAL.
-        jclass ex_class = env->FindClass("android/system/ErrnoException");
-        if (ex_class == nullptr) {
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            break;
-        }
-        jmethodID ctor = env->GetMethodID(ex_class, "<init>", "(Ljava/lang/String;I)V");
-        if (ctor == nullptr) {
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            env->DeleteLocalRef(ex_class);
-            break;
-        }
+        // All gates passed: this is the adbroot probe. Synthesize EINVAL using
+        // the cached class/method (no FindClass on this path).
+        jclass ex_class = errno_exception_class.load(std::memory_order_acquire);
+        jmethodID ctor = errno_exception_ctor.load(std::memory_order_acquire);
+        if (ex_class == nullptr || ctor == nullptr) break;
+
+        in_os_write_hook = true;
         jstring sys = env->NewStringUTF("write");
         jobject ex = env->NewObject(ex_class, ctor, sys, EINVAL);
-        env->DeleteLocalRef(ex_class);
+        in_os_write_hook = false;
+
         if (ex == nullptr) {
             if (env->ExceptionCheck()) env->ExceptionClear();
             break;
         }
-        // ThrowNew would need a message ctor; we already built the exact
-        // ErrnoException("write", EINVAL) the kernel path produces.
         env->Throw(reinterpret_cast<jthrowable>(ex));
         LOGI("filtered adbroot probe (%d bytes)", match_len);
         return -1;
@@ -333,10 +344,9 @@ static jint new_os_write(JNIEnv *env, jclass clazz, jobject fd, jobject buffer, 
     if (orig == nullptr) {
         // Hook was never installed successfully; surface EBADF just like Os.write
         // does when called with an invalid descriptor, rather than crashing.
-        jclass ex_class = env->FindClass("android/system/ErrnoException");
+        jclass ex_class = errno_exception_class.load(std::memory_order_acquire);
         if (ex_class != nullptr) {
             env->ThrowNew(ex_class, "write");
-            env->DeleteLocalRef(ex_class);
         }
         return -1;
     }
@@ -350,6 +360,44 @@ static void hook_os_write(JNIEnv *env) {
     if (!os_write_hook_in_progress.compare_exchange_strong(
             expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
         return;
+    }
+
+    // Resolve android.system.ErrnoException and its (String, int) ctor ONCE,
+    // pinning them as GlobalRefs for the hot path. Doing FindClass inside
+    // new_os_write would dominate the cost of every matching Os.write and
+    // risk contention on the class-loading lock during app_zygote init.
+    if (errno_exception_class.load(std::memory_order_acquire) == nullptr) {
+        jclass local = env->FindClass("android/system/ErrnoException");
+        if (local == nullptr) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGW("failed to find android/system/ErrnoException");
+            os_write_hook_in_progress.store(false, std::memory_order_release);
+            return;
+        }
+        jobject global = env->NewGlobalRef(local);
+        env->DeleteLocalRef(local);
+        if (global == nullptr) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGW("failed to pin ErrnoException global ref");
+            os_write_hook_in_progress.store(false, std::memory_order_release);
+            return;
+        }
+        jclass expected_null = nullptr;
+        if (!errno_exception_class.compare_exchange_strong(expected_null,
+                static_cast<jclass>(global), std::memory_order_release,
+                std::memory_order_acquire)) {
+            env->DeleteGlobalRef(global);  // another thread won the race
+        }
+
+        jmethodID ctor = env->GetMethodID(static_cast<jclass>(global),
+                                          "<init>", "(Ljava/lang/String;I)V");
+        if (ctor == nullptr) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGW("failed to find ErrnoException ctor");
+            os_write_hook_in_progress.store(false, std::memory_order_release);
+            return;
+        }
+        errno_exception_ctor.store(ctor, std::memory_order_release);
     }
 
     // The native backing of android.system.Os.write is
