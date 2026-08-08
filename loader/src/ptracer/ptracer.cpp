@@ -28,6 +28,16 @@
  */
 static bool execute_remote_injection(int pid, struct user_regs_struct &regs, const char *lib_path,
                                      TraceMode mode) {
+#if defined(__aarch64__)
+    // Clear the BTYPE field (bits 10 and 11) in PSTATE.
+    // Whatever indirect branch the tracee last took may have left BTYPE at 0b11.
+    // If we jump into BTI-protected bionic libraries (like libdl.so) with BTYPE=0b11,
+    // the CPU will throw a Branch Target Exception (SIGILL). The caller keeps the
+    // original PSTATE in its backup, so the tracee still validates its own BTI pad
+    // upon final resume.
+    regs.pstate &= ~(3ULL << 10);
+#endif
+
     auto map = MapInfo::Scan(std::to_string(pid));
     auto local_map = MapInfo::Scan();
     auto libc_return_addr = find_module_return_addr(map, "libc.so");
@@ -305,14 +315,6 @@ bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
     // It is vital we keep the original PSTATE intact in the backup, so
     // the original executable can securely validate its own BTI pad upon final resume.
     memcpy(&backup, &regs, sizeof(regs));
-
-#if defined(__aarch64__)
-    // Clear the BTYPE field (bits 10 and 11) in PSTATE.
-    // The previous indirect branch from the linker set BTYPE to 0b11.
-    // If we jump into BTI-protected bionic libraries (like libdl.so) with BTYPE=0b11,
-    // the CPU will throw a Branch Target Exception (SIGILL).
-    regs.pstate &= ~(3ULL << 10);
-#endif
 
     if (!execute_remote_injection(pid, regs, lib_path, mode)) {
         return false;
