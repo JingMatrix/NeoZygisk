@@ -1,19 +1,17 @@
-## 🚀 v2.3 - Robustness & Improved Root Support 🚀
+## 🚀 v2.4 - Android 17 & Device Compatibility 🚀
 
-This release focuses on improving stability for older architectures, ensuring compatibility with the latest KernelSU interfaces.
+This release adds Android 17 support and resolves injection failures across a range of device, kernel, and emulator configurations.
 
-### 🛠 KernelSU & Root Integration
-*   **KernelSU Supercall Support**: Implemented the new `ioctl`-based supercall interface for KernelSU (v20000+). This replaces the deprecated `prctl` method, ensuring compatibility with the latest KernelSU versions.
-*   **Relaxed Version Checks**: Version limits for KernelSU have been relaxed to support community variants, with warnings now issued in logs instead of strict enforcement.
+### 📱 Android 17
+*   **Zygote Signatures**: Added the reworked app-specialize signatures for Android 17 (`useFifoUi`, and `cgroupUid` on QPR2) and GrapheneOS 17 (relocated `extraLongArgs`); outdated signatures previously left app processes uninjected. Unresolved signatures are now logged rather than skipped silently.
+*   **ProtectedData Symbols**: Added a fallback for the `ProtectedData` (de-)constructor symbols absent on the Android 17 preview.
 
-### 📱 Android 12 & 32-bit Compatibility
-*   **Direct FD Passing**: Migrated mount namespace transfers to use Unix domain sockets (`SCM_RIGHTS`). This resolves "Permission denied" errors (Errno 13) encountered on certain Android 12 (arm32) devices when accessing namespace paths via `/proc`.
-*   **Ptrace Fallback Mechanism**: Introduced a fallback to `PTRACE_ATTACH` for kernels where `PTRACE_SEIZE` fails with an I/O error. This includes robust signal handling to ignore spurious "noise" signals during the injection process.
-*   **Legacy Register Support**: Added support for `PTRACE_GETREGS` and `PTRACE_SETREGS` for 32-bit ARM devices that do not support modern regset interfaces.
-*   **Path Correction**: Fixed the executable path for the 32-bit Zygote to correctly point to `/system/bin/app_process32`.
+### 🖥 Device & Kernel Compatibility
+*   **ARMv9 BTI**: Cleared the stale `PSTATE.BTYPE` before remote calls, fixing a SIGILL on `dlopen` via ptrace on BTI-enabled hardware such as the Pixel 10 Pro XL.
+*   **Nested Zygote Startup**: Added hierarchical tracing through stub processes for `init → stub_zygote → zygote` boot chains, such as some VR headsets.
+*   **Emulators**: Updated the SELinux policy to permit reading the mount namespace, fixing root-process namespace updates under AVD (qemu) emulators.
+*   **Stack Guard Pages**: Skipped non-readable guard pages when scanning the main stack, fixing a SIGSEGV during system server fork on kernels that report the guard page inside the stack region.
 
-### 🐛 Bug Fixes & Internal Improvements
-*   **Socket Communication Fix**: Resolved a critical buffer overwrite bug in `recv_fds` where control message validation was failing due to dummy data corruption.
-*   **Improved Fossil Detection**: Enhanced the detection of suspicious "zygote fossils" by monitoring loop device mounts, improving the stealth and cleanliness of the environment.
-*   **FD Sealing**: The daemon now gracefully ignores errors when adding seals to module file descriptors, improving compatibility with older or custom kernels that lack full sealing support.
-*   **Protocol Synchronization**: Added status byte checks to the communication protocol to prevent stream desynchronization during namespace transfers.
+### 🔒 Root & Mounting
+*   **KernelSU Unmount**: Disabled KernelSU's in-kernel `kernel_umount`; NeoZygisk now performs module unmounting itself.
+*   **Isolated Processes**: Skipped module loading and process-flag retrieval for isolated processes when the daemon is unreachable.
