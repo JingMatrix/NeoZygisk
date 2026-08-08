@@ -52,14 +52,43 @@ mechanism to load custom sepolicy rules. Since the rules NeoZygisk requires cann
 applied, it cannot run under an enforcing policy, and the device must be set
 permissive (`setenforce 0`).
 
-Relocating the runtime directory under `/data/system` is an attempt to shrink that
-gap: living in an already-accessible domain (`system_data_file`) removes the need for
-the custom file-access rules a `/data/adb` location would otherwise require. It
-cannot, however, grant `execmem` or the socket-connection rule, so it does not lift
-the permissive requirement. In that sense the relocation turns out to be futile — it
-only narrows the missing rule set and documents the attempt; permissive SELinux is
-still mandatory. The security consequence of running without that gate is covered in
+Relocating the runtime directory under `/data/system` shrinks that gap, since living in
+an already-accessible domain (`system_data_file`) removes the need for the custom
+file-access rules a `/data/adb` location would otherwise require. It cannot grant
+`execmem` or the socket-connection rule, so it does **not** lift the permissive
+requirement — permissive SELinux stays mandatory either way. The security consequence
+of running without that gate is covered in
 [Security: socket peer admission](#security-socket-peer-admission).
+
+### A work directory reachable by `system_server`
+
+The relocation is not only an SELinux convenience: `--system_server` does not work at
+all from `/data/adb`, and this is the reason the work directory moved.
+
+`/data/adb` is `0700 root:root`. A late-injected `system_server` runs as uid 1000, which
+has no search permission on that directory and therefore cannot reach anything beneath
+it. This is a **DAC** denial, not an SELinux one, so `setenforce 0` does not relax it,
+and the `chcon u:object_r:system_file:s0` that `post-fs-data.sh` applies to the work
+directory relabels the child without granting traversal of the parent. Two things break:
+
+- **The library.** The remote `dlopen` of `$TMP_PATH/lib64/libzygisk.so` executes in
+  `system_server`'s own uid-1000 context, so it fails before the payload ever loads.
+- **The control socket.** `entry()` calls `zygiskd::PingHeartbeat()` before any
+  mode-specific work, and the socket lives at `$TMP_PATH/` too. `connect()` requires
+  search permission on every path component, so it fails with `EACCES` regardless of the
+  mode on the socket itself — which would also make the `0777` socket mode and the
+  `AID_SYSTEM` branch of the `SO_PEERCRED` check unreachable in practice.
+
+Placing the work directory under `/data/system` resolves both at once: the directory is
+owned `system:system` by `post-fs-data.sh`, so uid 1000 can traverse it, read the
+library and connect to the socket. The alternative — staging the library somewhere
+world-readable, as the unused `copy_to_temp` helper in
+`loader/src/ptracer/ptracer.cpp` does — only addresses the first half and leaves the
+socket unreachable.
+
+Zygote is unaffected by any of this. It is uid 0 for the whole injection and
+pre-specialization window, so `--standalone` would work from either location; only
+`--system_server` depends on the relocation.
 
 ### An emulated Magisk environment
 
@@ -144,7 +173,9 @@ fi
 On an enforcing device the control socket is restricted to the `zygote` domain by
 `sepolicy.rule`, so the connecting process is trusted by construction. Late injection
 requires a permissive policy and a world-accessible (`0777`) socket, which removes that
-gate, so the daemon authenticates peers itself.
+gate, so the daemon authenticates peers itself. The `0777` mode is what lets a
+late-injected `system_server` reach the socket at all; DAC traversal to it is provided
+by the [work directory location](#a-work-directory-reachable-by-system_server).
 
 Every connection the daemon legitimately accepts is opened while the caller is still
 root or system at `connect()` time: zygote (uid 0) during injection and the whole
