@@ -139,6 +139,9 @@ fn main_daemon_entry(tmp_path: Option<&str>) -> anyhow::Result<()> {
     // Detect and globally set the root implementation.
     root_impl::setup();
     log::info!("Current root implementation: {:?}", root_impl::get());
+    // NeoZygisk unmounts module traces itself; make sure the root solution's own
+    // kernel-side unmount is off so the two do not race.
+    root_impl::disable_self_umount();
     zygiskd::main(tmp_path)
 }
 

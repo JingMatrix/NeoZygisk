@@ -108,6 +108,17 @@ pub fn uid_should_umount(uid: i32) -> bool {
     }
 }
 
+/// Ensures the active root solution does not unmount modules on its own.
+///
+/// NeoZygisk performs module unmounting itself, so any kernel-side unmount must be
+/// turned off to keep it from racing with our logic. Only KernelSU exposes such a
+/// feature (`kernel_umount`); every other implementation is a no-op.
+pub fn disable_self_umount() {
+    if *get() == RootImpl::KernelSU {
+        kernelsu::set_kernel_umount(false);
+    }
+}
+
 /// Checks if a given UID belongs to the active root manager application.
 pub fn uid_is_manager(uid: i32) -> bool {
     match get() {
