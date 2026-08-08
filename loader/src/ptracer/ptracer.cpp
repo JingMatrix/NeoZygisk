@@ -363,7 +363,7 @@ bool inject_after_start(int pid, const char *lib_path, TraceMode mode) {
 #endif
 
     // Execute the shared remote injection logic
-    bool sucess = execute_remote_injection(pid, regs, lib_path, mode);
+    bool success = execute_remote_injection(pid, regs, lib_path, mode);
 
     // Restore State directly.
     // The instruction pointer (REG_IP) is already correct in the backup.
@@ -373,7 +373,7 @@ bool inject_after_start(int pid, const char *lib_path, TraceMode mode) {
         return false;
     }
 
-    return sucess;
+    return success;
 }
 
 // Macro helper to check for specific ptrace stop events.
@@ -392,10 +392,17 @@ static bool wait_for_process(int pid, int *status) {
 
 /**
  * @brief Copies the library to a world-readable temporary file to bypass DAC restrictions.
- * @param src_path The original path (e.g., /data/adb/neozygisk/lib64/libzygisk.so)
+ *
+ * Kept for debugging: when the work directory is somewhere the target cannot read, point
+ * perform_injection() at this instead of the packaged library to find out whether a failed
+ * injection is a permission problem or something else. It is deliberately not wired into
+ * the normal path -- it only relocates the library, while the control socket stays where it
+ * is, so it cannot on its own make an unreachable work directory usable.
+ *
+ * @param src_path The original path (e.g., /data/system/neozygisk/lib64/libzygisk.so)
  * @return The path to the temporary file, or an empty string on failure.
  */
-static std::string copy_to_temp(const std::string &src_path) {
+[[maybe_unused]] static std::string copy_to_temp(const std::string &src_path) {
     char tmp_path[] = "/data/local/tmp/zygisk_XXXXXX.so";
 
     // mkstemps securely creates the file with a random 6-character string replacing XXXXXX.
@@ -449,32 +456,10 @@ static bool perform_injection(int pid, TraceMode mode) {
     lib_path += "/lib" LP_SELECT("", "64") "/libzygisk.so";
     bool process_started = mode == TraceMode::STANDALONE || mode == TraceMode::SYSTEM_SERVER;
 
-    std::string inject_path = lib_path;
-    bool use_temp = false;
-
-    // if (mode == TraceMode::SYSTEM_SERVER) {
-    //     inject_path = copy_to_temp(lib_path);
-    //     if (inject_path.empty()) {
-    //         LOGE("aborting injection: could not create accessible library copy");
-    //         return false;
-    //     }
-    //     use_temp = true;
-    // }
-
-    bool success = false;
-
     if (process_started) {
-        success = inject_after_start(pid, inject_path.c_str(), mode);
-    } else {
-        success = inject_before_start(pid, inject_path.c_str(), mode);
+        return inject_after_start(pid, lib_path.c_str(), mode);
     }
-
-    if (use_temp) {
-        LOGV("cleaning up temporary library: %s", inject_path.c_str());
-        unlink(inject_path.c_str());
-    }
-
-    return success;
+    return inject_before_start(pid, lib_path.c_str(), mode);
 }
 
 /**

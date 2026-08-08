@@ -6,4 +6,3 @@ enum TraceMode {
     STANDALONE = 2,
     SYSTEM_SERVER = 3,
 };
-

@@ -51,16 +51,29 @@ fi
 
 [ "$DEBUG" = true ] && export RUST_BACKTRACE=1
 
-if [ -z $(pidof system_server) ]; then
-	if [ -f $MODDIR/bin/zygisk-ptrace64 ]; then
-		$MODDIR/bin/zygisk-ptrace64 monitor &
-	elif [ -f $MODDIR/bin/zygisk-ptrace32 ]; then
-		$MODDIR/bin/zygisk-ptrace32 monitor &
-	fi
+# app_process names itself "zygote64" when built LP64 and "zygote" otherwise, so the
+# 32-bit branch only applies to 32-bit-only devices. On a 64/32 device the secondary
+# 32-bit zygote is not covered by the standalone path; only the monitor path sees it.
+if [ -f "$MODDIR/bin/zygisk-ptrace64" ]; then
+	TRACER="$MODDIR/bin/zygisk-ptrace64"
+	ZYGOTE="zygote64"
+elif [ -f "$MODDIR/bin/zygisk-ptrace32" ]; then
+	TRACER="$MODDIR/bin/zygisk-ptrace32"
+	ZYGOTE="zygote"
 else
-	if [ -f $MODDIR/bin/zygisk-ptrace64 ]; then
-		$MODDIR/bin/zygisk-ptrace64 trace $(pidof zygote64) --standalone &
-	elif [ -f $MODDIR/bin/zygisk-ptrace32 ]; then
-		$MODDIR/bin/zygisk-ptrace32 trace $(pidof zygote32) --standalone &
+	log -p e -t "zygisk-sh" "No tracer binary found in $MODDIR/bin"
+	exit 1
+fi
+
+if [ -z "$(pidof system_server)" ]; then
+	# Normal boot: supervise zygote from the start and inject as it spawns.
+	"$TRACER" monitor &
+else
+	# Late injection: the system is already up, so attach to the running zygote.
+	ZYGOTE_PID="$(pidof "$ZYGOTE")"
+	if [ -z "$ZYGOTE_PID" ]; then
+		log -p e -t "zygisk-sh" "Cannot inject: no running $ZYGOTE found"
+		exit 1
 	fi
+	"$TRACER" trace "$ZYGOTE_PID" --standalone &
 fi

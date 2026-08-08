@@ -21,27 +21,10 @@ namespace {
 class JniAttachment {
 public:
     JniAttachment() {
-        // auto cached_map_infos = lsplt::MapInfo::Scan();
-        // void* libart;
-        // for (auto& map : cached_map_infos) {
-        //     if (map.path.ends_with("/libart.so")) {
-        //         LOGV("found path %s", map.path.data());
-        //         libart = dlopen(map.path.data(), RTLD_NOLOAD | RTLD_NOW);
-        //         if (!libart) {
-        //             libart = dlopen("libart.so", RTLD_NOW);
-        //         }
-        //         break;
-        //     }
-        // }
-
-        // if (!libart) {
-        //     LOGE("failed to get libart.so handle");
-        //     return;
-        // }
-
         using JNI_GetCreatedJavaVMs_t = jint (*)(JavaVM**, jsize, jsize*);
 
-        // Pass RTLD_DEFAULT instead of a specific library handle
+        // RTLD_DEFAULT searches the global scope, which already contains libart in a
+        // running system_server, so there is no need to locate and dlopen it ourselves.
         auto get_vms =
             reinterpret_cast<JNI_GetCreatedJavaVMs_t>(dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs"));
 
@@ -167,7 +150,7 @@ void trigger_system_server_hooks() {
     ctx.server_specialize_post();
 
     // 5. Clean up the local JNI reference to prevent memory leaks in the ART
-    // if (gids) {
-    //     env->DeleteLocalRef(gids);
-    // }
+    if (gids) {
+        env->DeleteLocalRef(gids);
+    }
 }

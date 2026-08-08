@@ -134,7 +134,7 @@ bool AppMonitor::prepare_environment() {
 
 void AppMonitor::run(bool socket_loop, bool ptrace_loop) {
     if (!socket_loop && !ptrace_loop) {
-        LOGD("No moniter handler actived, exiting...");
+        LOGD("no monitor handler active, exiting...");
         return;
     }
     event_loop_.Init();

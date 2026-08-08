@@ -151,7 +151,8 @@ static void print_usage(const char *tool_name) {
     fprintf(stderr, "NeoZygisk Tracer %s\n", ZKSU_VERSION);
     fprintf(
         stderr,
-        "usage: %s monitor | trace <pid> [--spwan | --standalone | --system_server] | ctl <start|stop|exit> | version\n",
+        "usage: %s monitor | trace <pid> [--spawn | --standalone | --system_server] | ctl "
+        "<start|stop|exit> | version\n",
         tool_name);
 }
 
@@ -223,28 +224,47 @@ static int handle_trace(int argc, char **argv) {
     } else if (mode == TraceMode::STANDALONE) {
         printf("standalone mode: preparing injection and starting daemon...\n");
 
-        auto pid = fork();
-        if (pid < 0) {
-            PLOGE("init_monitor");
-            return false;
-        } else if (pid == 0) {
-            // Change directory to $MODDIR BEFORE preparing the injection
+        // Fork off the daemon supervisor. The child never returns from this branch: it
+        // owns the control socket and the zygiskd process for the rest of the session,
+        // while the parent falls through to inject into the already-running zygote.
+        auto supervisor_pid = fork();
+        if (supervisor_pid < 0) {
+            PLOGE("fork daemon supervisor");
+            return EXIT_FAILURE;
+        }
+        if (supervisor_pid == 0) {
+            // The parent armed handle_interrupt with the tracee's PID before forking.
+            // We are not the tracer, so disown it to keep the child from detaching a
+            // process it never attached to.
+            g_traced_pid = 0;
+
+            // prepare_environment() reads ./module.prop and ZygoteAbiManager execs
+            // ./bin/zygiskd*, so both need $MODDIR as the working directory.
             cd_to_moddir();
             AppMonitor monitor;
             if (!monitor.prepare_environment()) {
-                exit(1);
+                fprintf(stderr, "error: failed to prepare the monitor environment\n");
+                _exit(EXIT_FAILURE);
             }
             if (monitor.get_abi_manager().check_and_prepare_injection() == nullptr) {
                 fprintf(stderr, "error: failed to start daemon and prepare injector\n");
-                return EXIT_FAILURE;
+                _exit(EXIT_FAILURE);
             }
+            // Socket loop only: standalone mode does no ptrace supervision.
             monitor.run(true, false);
+            _exit(EXIT_SUCCESS);
         }
     } else if (mode == TraceMode::SYSTEM_SERVER) {
         target = "system_server";
-        printf("injecting into system_server");
+        printf("injecting into system_server\n");
     }
 
+    // Note on standalone ordering: nothing synchronises the supervisor fork above with
+    // the injection below, so the tracee may reach zygiskd::PingHeartbeat() before the
+    // daemon has bound the control socket. This is covered by the retry budget in
+    // zygiskd::Connect() -- PingHeartbeat uses Connect(5), i.e. four one-second retries
+    // -- which comfortably outlasts a fork+exec of zygiskd. The retries run inside the
+    // ptrace-stopped tracee, so the only cost of losing the race is a short stall.
     if (!trace_target(pid, mode)) {
         if (mode == TraceMode::SPAWN) {
             fprintf(stderr, "error: failed to trace zygote, killing process %d\n", pid);

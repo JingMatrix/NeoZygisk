@@ -5,6 +5,7 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/resource.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 #include <unwind.h>
 
@@ -14,8 +15,6 @@
 #include "daemon.hpp"
 #include "module.hpp"
 #include "zygisk.hpp"
-
-#define PROP_VALUE_MAX 92
 
 using namespace std;
 
