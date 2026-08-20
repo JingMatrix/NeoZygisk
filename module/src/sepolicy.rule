@@ -13,5 +13,7 @@ allow zygote zygote process execmem
 allow system_server system_server process execmem
 allow zygote tmpfs file *
 allow zygote appdomain_tmpfs file *
+allow zygote magisk memfd_file {getattr read write map execute}
+allow zygote su memfd_file {getattr read write map execute}
 allow zygote proc file *
 allow zygote nsfs file *

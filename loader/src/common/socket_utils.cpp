@@ -79,8 +79,13 @@ void* recv_fds(int sockfd, char* cmsgbuf, size_t bufsz, int cnt) {
 
     // --- No headers received ---
     if (cmsg == nullptr) {
-        LOGE("recv_fds: No control headers received. msg_controllen=%zu",
-             (size_t) msg.msg_controllen);
+        // MSG_CTRUNC tells the two cases apart: the peer attached descriptors and the
+        // kernel refused to install them, typically an SELinux denial on the file being
+        // passed, versus the peer having attached none at all.
+        LOGE("recv_fds: No control headers received. msg_controllen=%zu, %s",
+             (size_t) msg.msg_controllen,
+             (msg.msg_flags & MSG_CTRUNC) ? "the kernel dropped the descriptors"
+                                          : "the peer attached none");
         return nullptr;
     }
 
