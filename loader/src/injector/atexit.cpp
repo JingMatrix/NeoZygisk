@@ -6,11 +6,17 @@
 namespace Atexit {
 
 void AtexitArray::recompact() {
-    if (!needs_recompaction()) {
-        LOGV("needs_recompaction returns false");
-    }
+    // Unlike bionic, we recompact unconditionally to scrub the atexit fingerprint even when it
+    // would not free a page; needs_recompaction() is only a diagnostic hint here.
+    LOGV("recompacting atexit array (needs_recompaction=%d)", needs_recompaction());
 
-    set_writable(true, 0, size_);
+    // If the pages cannot be made writable, do not touch the array. mprotect can fail with ENOMEM
+    // under memory pressure (e.g. splitting a VMA past max_map_count), and writing into memory that
+    // was never made writable would fault with SEGV_ACCERR. Skip this pass instead of crashing.
+    if (!set_writable(true, 0, size_)) {
+        LOGE("skipping atexit recompaction: array could not be made writable");
+        return;
+    }
 
     // Optimization: quickly skip over the initial non-null entries.
     size_t src = 0, dst = 0;
@@ -44,8 +50,8 @@ void AtexitArray::recompact() {
 
 // Use mprotect to make the array writable or read-only. Returns true on success. Making the array
 // read-only could protect against either unintentional or malicious corruption of the array.
-void AtexitArray::set_writable(bool writable, size_t start_idx, size_t num_entries) {
-    if (array_ == nullptr) return;
+bool AtexitArray::set_writable(bool writable, size_t start_idx, size_t num_entries) {
+    if (array_ == nullptr) return false;
 
     const size_t start_byte = page_start_of_index(start_idx);
     const size_t stop_byte = page_end_of_index(start_idx + num_entries);
@@ -54,7 +60,9 @@ void AtexitArray::set_writable(bool writable, size_t start_idx, size_t num_entri
     const int prot = PROT_READ | (writable ? PROT_WRITE : 0);
     if (mprotect(reinterpret_cast<char *>(array_) + start_byte, byte_len, prot) != 0) {
         PLOGE("mprotect on atexit array");
+        return false;
     }
+    return true;
 }
 
 AtexitArray *findAtexitArray() {
