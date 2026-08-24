@@ -357,7 +357,7 @@ void ZygiskContext::app_specialize_pre() {
     if (!skip_zygiskd && info_flags == 0) info_flags = zygiskd::GetProcessFlags(uid);
 
     if ((info_flags & UNMOUNT_MASK) == UNMOUNT_MASK) {
-        LOGI("[%s] is on the denylist", process);
+        LOGV("[%s] is on the denylist", process);
         flags |= DO_REVERT_UNMOUNT;
     }
 
