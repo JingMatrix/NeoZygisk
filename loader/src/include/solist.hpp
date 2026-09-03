@@ -8,6 +8,7 @@
 namespace Linker {
 class SoInfoWrapper {
 public:
+    inline static size_t field_base_offset = soinfo::get_base_offset();
     inline static size_t field_size_offset = soinfo::get_size_offset();
     inline static size_t field_next_offset = soinfo::get_next_offset();
     inline static size_t field_constructor_called_offset = soinfo::get_constructors_called_offset();
@@ -16,6 +17,11 @@ public:
     inline static const char *(*get_realpath_sym)(SoInfoWrapper *) = nullptr;
     inline static void (*soinfo_free)(SoInfoWrapper *) = nullptr;
     inline static void (*soinfo_unload)(SoInfoWrapper *) = nullptr;
+
+    inline uintptr_t getBase() {
+        return *reinterpret_cast<uintptr_t *>(reinterpret_cast<uintptr_t>(this) +
+                                              field_base_offset);
+    }
 
     inline size_t getSize() {
         return *reinterpret_cast<size_t *>(reinterpret_cast<uintptr_t>(this) + field_size_offset);
@@ -115,7 +121,10 @@ const size_t llvm_suffix_length = 25;
 
 bool initialize();
 bool findHeuristicOffsets(std::string linker_name, SoInfoWrapper *vdso);
-bool dropSoPath(const char *target_pathn, bool unload);
+bool dropSoPath(const char *target_pathn, bool unload, uintptr_t *out_base = nullptr,
+                size_t *out_size = nullptr);
+
+void dumpSoPath(const char *needle, const char *when);
 void resetCounters(size_t load, size_t unload);
 
 }  // namespace Linker

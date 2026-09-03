@@ -1,7 +1,15 @@
 #include <linux/mman.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 
 #include <lsplt.hpp>
+
+#ifndef PR_SET_VMA
+#define PR_SET_VMA 0x53564d41
+#endif
+#ifndef PR_SET_VMA_ANON_NAME
+#define PR_SET_VMA_ANON_NAME 0
+#endif
 
 #include "atexit.hpp"
 #include "fossil.hpp"
@@ -18,9 +26,9 @@ void clean_libc_trace() {
 }
 
 void clean_linker_trace(const char *path, size_t loaded_modules, size_t unloaded_modules,
-                        bool unload_soinfo) {
+                        bool unload_soinfo, uintptr_t *out_base, size_t *out_size) {
     LOGV("cleaning linker trace for path %s", path);
-    Linker::dropSoPath(path, unload_soinfo);
+    Linker::dropSoPath(path, unload_soinfo, out_base, out_size);
 
     if (unload_soinfo) {
         Linker::resetCounters(loaded_modules, loaded_modules);
@@ -60,6 +68,7 @@ void spoof_virtual_maps(const char *path, bool clear_write_permission) {
             munmap(copy, size);
             // Restore the original permissions
             mprotect(addr, size, map.perms);
+            prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, size, "dalvik-DEX data");
         }
 
         if (clear_write_permission && map.path.size() > 0 &&

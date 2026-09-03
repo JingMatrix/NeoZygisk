@@ -375,6 +375,8 @@ private:
     // ElfW(Addr) compat_relro_size_ = 0;
 
 public:
+    static constexpr size_t get_base_offset() { return offsetof(soinfo, base); }
+
     static constexpr size_t get_size_offset() { return offsetof(soinfo, size); }
 
     static constexpr size_t get_next_offset() { return offsetof(soinfo, next); }

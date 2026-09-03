@@ -5,6 +5,7 @@
 #include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/ptrace.h>
+#include <sys/sysmacros.h>
 #include <sys/system_properties.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -273,13 +274,30 @@ bool inject_on_main(int pid, const char *lib_path) {
     map = MapInfo::Scan(std::to_string(pid));
     void *start_addr = nullptr;
     size_t block_size = 0;
+    // Use the pathname only to identify the library once, then collect its mappings by
+    // device and inode. A substring test is not a safe key for the collection pass: a
+    // "(deleted)" suffix on a replaced file, or any second mapping whose path merely
+    // contains the same basename, would be folded into the range we later unmap.
+    // dev+inode names the file itself, and it also excludes anonymous mappings, whose
+    // inode is zero.
+    dev_t lib_dev = 0;
+    ino_t lib_inode = 0;
     for (const auto &info : map) {
-        if (info.path.find("libzygisk.so") != std::string::npos) {
+        if (info.inode != 0 && info.path.find("libzygisk.so") != std::string::npos) {
+            lib_dev = info.dev;
+            lib_inode = info.inode;
+            break;
+        }
+    }
+    if (lib_inode != 0) {
+        for (const auto &info : map) {
+            if (info.dev != lib_dev || info.inode != lib_inode) continue;
             if (start_addr == nullptr) start_addr = (void *) info.start;
             block_size += (info.end - info.start);
         }
     }
-    LOGV("found injected library mapped from %p with total size %zu", start_addr, block_size);
+    LOGV("found injected library mapped from %p with total size %zu [dev %u:%u inode %lu]",
+         start_addr, block_size, major(lib_dev), minor(lib_dev), (unsigned long) lib_inode);
 
     // Remotely call our entry(start_addr, block_size, path) function
     LOGI("calling the injector's entry function to initialize NeoZygisk");
