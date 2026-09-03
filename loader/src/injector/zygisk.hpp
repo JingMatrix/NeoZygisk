@@ -25,7 +25,8 @@ void hookJniNativeMethods(JNIEnv *env, const char *clz, JNINativeMethod *methods
 void clean_libc_trace();
 
 void clean_linker_trace(const char *path, size_t loaded_modules, size_t unloaded_modules,
-                        bool unload_soinfo);
+                        bool unload_soinfo, uintptr_t *out_base = nullptr,
+                        size_t *out_size = nullptr);
 
 void spoof_virtual_maps(const char *path, bool clear_write_permission);
 

@@ -427,7 +427,24 @@ void HookContext::restore_zygote_hook(JNIEnv *env) {
 void hook_entry(void *start_addr, size_t block_size) {
     g_hook = new HookContext(start_addr, block_size);
     g_hook->hook_plt();
-    clean_linker_trace(zygiskd::GetTmpPath().data(), 1, 0, true);
+
+    uintptr_t reserved_base = 0;
+    size_t reserved_size = 0;
+    clean_linker_trace(zygiskd::GetTmpPath().data(), 1, 0, true, &reserved_base, &reserved_size);
+
+    // The ptracer sums only path-matched mappings, missing the anonymous .bss zeromap at
+    // the top of the reservation. soinfo::size is the real figure; trust it only when the
+    // base agrees, so a mismatch keeps the old behaviour.
+    if (reserved_base == reinterpret_cast<uintptr_t>(start_addr) && reserved_size > block_size) {
+        LOGV("linker reserved %zu bytes for us, %zu more than the ptracer measured; unmapping "
+             "the whole reservation",
+             reserved_size, reserved_size - block_size);
+        g_hook->block_size = reserved_size;
+    } else if (reserved_base != reinterpret_cast<uintptr_t>(start_addr)) {
+        LOGW("linker reservation base %p does not match the injected range at %p; keeping the "
+             "ptracer's size %zu",
+             (void *) reserved_base, start_addr, block_size);
+    }
 }
 
 void hookJniNativeMethods(JNIEnv *env, const char *clz, JNINativeMethod *methods, int numMethods) {

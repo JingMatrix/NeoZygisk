@@ -1,5 +1,8 @@
 #include "solist.hpp"
 
+#include <algorithm>
+#include <vector>
+
 #include "logging.hpp"
 
 namespace Linker {
@@ -23,26 +26,14 @@ bool initialize() {
     if (soinfo_unload_name.empty()) return false;
     LOGV("found symbol name %s", soinfo_unload_name.data());
 
-    char llvm_sufix[llvm_suffix_length + 1];
+    // The .llvm.<hash> suffix has no fixed width; Android 17 ships a 26-character one.
+    const std::string llvm_sufix(somain_sym_name.substr(strlen("__dl__ZL6somain")));
 
-    if (somain_sym_name.length() != strlen("__dl__ZL6somain")) {
-        strncpy(llvm_sufix, somain_sym_name.data() + strlen("__dl__ZL6somain"), sizeof(llvm_sufix));
-    } else {
-        llvm_sufix[0] = '\0';
-    }
-
-    char solinker_sym_name[sizeof("__dl__ZL8solinker") + sizeof(llvm_sufix)];
-    snprintf(solinker_sym_name, sizeof(solinker_sym_name), "__dl__ZL8solinker%s", llvm_sufix);
-
+    const std::string solinker_sym_name = "__dl__ZL8solinker" + llvm_sufix;
     // for SDK < 36 (Android 16), the linker binary is loaded with name solist
-    char solist_sym_name[sizeof("__dl__ZL6solist") + sizeof(llvm_sufix)];
-    snprintf(solist_sym_name, sizeof(solist_sym_name), "__dl__ZL6solist%s", llvm_sufix);
-
-    char sonext_sym_name[sizeof("__dl__ZL6sonext") + sizeof(llvm_sufix)];
-    snprintf(sonext_sym_name, sizeof(sonext_sym_name), "__dl__ZL6sonext%s", llvm_sufix);
-
-    char vdso_sym_name[sizeof("__dl__ZL4vdso") + sizeof(llvm_sufix)];
-    snprintf(vdso_sym_name, sizeof(vdso_sym_name), "__dl__ZL4vdso%s", llvm_sufix);
+    const std::string solist_sym_name = "__dl__ZL6solist" + llvm_sufix;
+    const std::string sonext_sym_name = "__dl__ZL6sonext" + llvm_sufix;
+    const std::string vdso_sym_name = "__dl__ZL4vdso" + llvm_sufix;
 
     solinker = ElfParser::resolveSymbolPointer<SoInfoWrapper>(linker, solinker_sym_name);
     if (solinker == nullptr) {
@@ -106,8 +97,11 @@ bool findHeuristicOffsets(std::string linker_name, SoInfoWrapper *vdso) {
         if (!size_field_found) {
             if (size_of_somain < size_maximal && size_of_somain > size_minimal) {
                 SoInfoWrapper::field_size_offset = i * sizeof(void *);
-                LOGV("heuristic field_size_offset is %zu * %zu = %p", i, sizeof(void *),
-                     reinterpret_cast<void *>(SoInfoWrapper::field_size_offset));
+                SoInfoWrapper::field_base_offset =
+                    SoInfoWrapper::field_size_offset - sizeof(ElfW(Addr));
+                LOGV("heuristic field_size_offset is %zu * %zu = %p (base at %p)", i,
+                     sizeof(void *), reinterpret_cast<void *>(SoInfoWrapper::field_size_offset),
+                     reinterpret_cast<void *>(SoInfoWrapper::field_base_offset));
                 size_field_found = true;
                 continue;
             }
@@ -167,31 +161,70 @@ bool findHeuristicOffsets(std::string linker_name, SoInfoWrapper *vdso) {
     return size_field_found && next_field_found && constructor_called_field_found;
 }
 
-bool dropSoPath(const char *target_path, bool unload) {
+void dumpSoPath(const char *needle, const char *when) {
+    if (solinker == nullptr && !initialize()) return;
+    size_t n = 0;
+    for (auto *iter = solinker; iter; iter = iter->getNext()) {
+        if (iter->getPath() && strstr(iter->getPath(), needle)) {
+            LOGV("[%s] solist record %p size %zu for %s", when, (void *) iter, iter->getSize(),
+                 iter->getPath());
+            n++;
+        }
+    }
+    LOGV("[%s] %zu record(s) matching \"%s\"", when, n, needle);
+}
+
+bool dropSoPath(const char *target_path, bool unload, uintptr_t *out_base, size_t *out_size) {
     bool path_found = false;
     if (solinker == nullptr && !initialize()) {
         LOGE("failed to initialize solist before dropping paths");
         return path_found;
     }
+
+    // soinfo_free zeroes the block, so walking the list while dropping stops after the
+    // first hit. Release highest block first: the allocator is LIFO, so that hands them
+    // back in ascending order and the allocation sequence stays monotonic.
+    std::vector<SoInfoWrapper *> targets;
     for (auto *iter = solinker; iter; iter = iter->getNext()) {
-        if (iter->getPath() && strstr(iter->getPath(), target_path)) {
-            Linker::ProtectedDataGuard guard;
-            auto size = iter->getSize();
-            LOGV("dropping solist record for %s [size %zu, constructor_called: %d]",
-                 iter->getPath(), size, iter->getConstructorCalled());
-            if (size > 0) {
-                iter->setSize(0);
-                if (unload) {
-                    iter->setConstructorCalled(false);
-                    SoInfoWrapper::soinfo_unload(iter);
-                    iter->setConstructorCalled(true);
-                } else {
-                    SoInfoWrapper::soinfo_free(iter);
-                    iter->setSize(size);
-                }
-                path_found = true;
+        if (iter->getPath() && strstr(iter->getPath(), target_path) && iter->getSize() > 0) {
+            targets.push_back(iter);
+        }
+    }
+    std::sort(targets.begin(), targets.end(), [](SoInfoWrapper *a, SoInfoWrapper *b) {
+        return reinterpret_cast<uintptr_t>(a) > reinterpret_cast<uintptr_t>(b);
+    });
+
+    for (auto *target : targets) {
+        // A previous unload may have taken this one with it; a double unload aborts.
+        bool still_linked = false;
+        for (auto *iter = solinker; iter; iter = iter->getNext()) {
+            if (iter == target) {
+                still_linked = true;
+                break;
             }
         }
+        if (!still_linked) {
+            LOGV("solist record %p went away with an earlier unload", (void *) target);
+            continue;
+        }
+
+        Linker::ProtectedDataGuard guard;
+        auto size = target->getSize();
+        if (size == 0) continue;
+        LOGV("dropping solist record %p for %s [size %zu, constructor_called: %d]",
+             (void *) target, target->getPath(), size, target->getConstructorCalled());
+        if (out_base != nullptr && *out_base == 0) *out_base = target->getBase();
+        if (out_size != nullptr && *out_size == 0) *out_size = size;
+        target->setSize(0);
+        if (unload) {
+            target->setConstructorCalled(false);
+            SoInfoWrapper::soinfo_unload(target);
+            target->setConstructorCalled(true);
+        } else {
+            SoInfoWrapper::soinfo_free(target);
+            target->setSize(size);
+        }
+        path_found = true;
     }
     return path_found;
 }

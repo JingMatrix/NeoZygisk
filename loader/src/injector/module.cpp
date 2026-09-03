@@ -16,6 +16,7 @@
 #include "dl.hpp"
 #include "files.hpp"
 #include "logging.hpp"
+#include "solist.hpp"
 #include "misc.hpp"
 #include "zygisk.hpp"
 
@@ -318,13 +319,19 @@ void ZygiskContext::run_modules_post() {
         } else if (flags & SERVER_FORK_AND_SPECIALIZE) {
             m.postServerSpecialize(args.server);
         }
-        if (m.tryUnload()) modules_unloaded++;
+    }
+    // Reverse: the allocator is LIFO, so releasing back to front hands the blocks back
+    // in ascending order and leaves the allocation sequence monotonic.
+    for (auto it = modules.rbegin(); it != modules.rend(); ++it) {
+        if (it->tryUnload()) modules_unloaded++;
     }
 
     if (modules.size() > 0) {
         LOGV("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         if (modules.size() == modules_unloaded) clean_libc_trace();
-        clean_linker_trace("jit-cache-zygisk", modules.size(), modules_unloaded, true);
+        // "zygisk-module" is the memfd name (zygiskd.rs:264); b4d31ab fixed the same
+        // stale needle in spoof_virtual_maps but missed this call site.
+        clean_linker_trace("zygisk-module", modules.size(), modules_unloaded, true);
         g_hook->should_spoof_maps =
             (flags & APP_SPECIALIZE) && (modules.size() - modules_unloaded) > 0;
     }
