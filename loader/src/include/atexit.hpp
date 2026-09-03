@@ -110,7 +110,7 @@ private:
         return page_end_of_index(size_ - extracted_count_) < page_end_of_index(size_);
     }
 
-    void set_writable(bool writable, size_t start_idx, size_t num_entries);
+    bool set_writable(bool writable, size_t start_idx, size_t num_entries);
 };
 
 AtexitArray* findAtexitArray();
