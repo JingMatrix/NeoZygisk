@@ -190,6 +190,16 @@ bool ZygiskContext::plt_hook_commit() {
 
 // -----------------------------------------------------------------
 
+static bool is_trace_marker_fd(int fd_dir, const char *fd_name) {
+    constexpr char trace_marker[] = "/sys/kernel/tracing/trace_marker";
+    constexpr char debug_trace_marker[] = "/sys/kernel/debug/tracing/trace_marker";
+    char target[sizeof(debug_trace_marker)];
+    ssize_t len = readlinkat(fd_dir, fd_name, target, sizeof(target));
+    if (len < 0 || static_cast<size_t>(len) >= sizeof(target)) return false;
+    target[len] = '\0';
+    return strcmp(target, trace_marker) == 0 || strcmp(target, debug_trace_marker) == 0;
+}
+
 void ZygiskContext::sanitize_fds() {
     if (!is_child()) {
         return;
@@ -236,6 +246,10 @@ void ZygiskContext::sanitize_fds() {
         int fd = parse_int(entry->d_name);
         if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) &&
             fd != dfd) {
+            // Bionic may open trace_marker during module initialization and cache its fd.
+            // Closing it here leaves a stale cache that can write into a reused fd.
+            // Both trace_marker paths are also allowed by the framework's zygote FD checks.
+            if (is_trace_marker_fd(dfd, entry->d_name)) continue;
             close(fd);
         }
     }
