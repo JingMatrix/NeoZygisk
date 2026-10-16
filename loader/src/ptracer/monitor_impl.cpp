@@ -133,9 +133,10 @@ bool AppMonitor::prepare_environment() {
 }
 
 void AppMonitor::run() {
-    socket_handler_.Init();
-    ptrace_handler_.Init();
-    event_loop_.Init();
+    if (!socket_handler_.Init() || !ptrace_handler_.Init() || !event_loop_.Init()) {
+        LOGE("failed to initialize monitor, aborting");
+        return;
+    }
     event_loop_.RegisterHandler(socket_handler_, EPOLLIN | EPOLLET);
     event_loop_.RegisterHandler(ptrace_handler_, EPOLLIN | EPOLLET);
     event_loop_.Loop();
@@ -194,6 +195,11 @@ bool AppMonitor::SocketHandler::Init() {
     };
     sprintf(addr.sun_path, "%s/%s", zygiskd::GetTmpPath().c_str(), AppMonitor::SOCKET_NAME);
     socklen_t socklen = sizeof(sa_family_t) + strlen(addr.sun_path);
+    // A previous monitor (e.g. one restarted without reboot) may have left its socket behind;
+    // binding over it fails with EADDRINUSE and leaves the daemon unable to report back.
+    if (unlink(addr.sun_path) == -1 && errno != ENOENT) {
+        PLOGE("unlink stale socket");
+    }
     if (bind(sock_fd_, (struct sockaddr *) &addr, socklen) == -1) {
         PLOGE("bind socket");
         return false;
@@ -590,7 +596,9 @@ bool AppMonitor::SigChldHandler::handleExecEvent(int pid, int &status) {
                 execl(tracer, basename(tracer), "trace", std::to_string(pid).c_str(), "--restart",
                       nullptr);
                 PLOGE("execute injector daemon");
-                kill(pid, SIGKILL);
+                // Let zygote boot uninjected rather than killing it: repeated kills here
+                // drive system_server into a restart loop and trip RescueParty.
+                kill(pid, SIGCONT);
                 _exit(1);
             } else if (p == -1) {
                 PLOGE("fork injector daemon");
