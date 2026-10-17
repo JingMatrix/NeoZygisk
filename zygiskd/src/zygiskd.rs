@@ -33,7 +33,14 @@ struct Module {
     name: String,
     lib_fd: OwnedFd,
     /// A handle to the module's companion process socket, if it exists and is running.
-    companion: Mutex<Option<UnixStream>>,
+    companion: Mutex<CompanionState>,
+}
+
+#[derive(Default)]
+struct CompanionState {
+    socket: Option<UnixStream>,
+    /// Requests accepted before a restart must not recreate an old companion.
+    retired: bool,
 }
 
 /// The shared context for the daemon, containing all loaded modules and a mount namespace manager
@@ -56,7 +63,7 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
     send_startup_info(&modules)?;
 
     let mount_manager = Arc::new(MountNamespaceManager::new());
-    let context = Arc::new(AppContext {
+    let mut context = Arc::new(AppContext {
         modules,
         mount_manager,
     });
@@ -67,8 +74,7 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
     // Main event loop: accept and handle incoming connections.
     for stream in listener.incoming() {
         let stream = stream.context("Failed to accept incoming connection")?;
-        let context = Arc::clone(&context);
-        if let Err(e) = handle_connection(stream, context) {
+        if let Err(e) = handle_connection(stream, &mut context) {
             warn!("Error handling connection: {}", e);
         }
     }
@@ -77,7 +83,7 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
 }
 
 /// Handles a single incoming connection from Zygisk.
-fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result<()> {
+fn handle_connection(mut stream: UnixStream, context: &mut Arc<AppContext>) -> Result<()> {
     let action = stream.read_u8()?;
     let action = DaemonSocketAction::try_from(action)
         .with_context(|| format!("Invalid daemon action code: {}", action))?;
@@ -99,9 +105,12 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
             utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &value.to_le_bytes())?;
         }
         DaemonSocketAction::ZygoteRestart => {
-            info!("Zygote restarted, cleaning up companion sockets.");
-            for module in &context.modules {
-                module.companion.lock().unwrap().take();
+            info!("Zygote restarted, refreshing modules and cleaning up companions.");
+            // This runs in the accept loop before any post-restart requests are
+            // dispatched. Already dispatched requests retain their own snapshot.
+            refresh_modules(context, Path::new(constants::PATH_MODULES_DIR), get_arch()?)?;
+            if let Err(e) = send_startup_info(&context.modules) {
+                warn!("Failed to update module status after restart: {}", e);
             }
         }
         DaemonSocketAction::SystemServerStarted => {
@@ -110,6 +119,7 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
         }
         // Heavier actions are spawned into a separate thread.
         _ => {
+            let context = Arc::clone(context);
             thread::spawn(move || {
                 if let Err(e) = handle_threaded_action(action, stream, &context) {
                     warn!(
@@ -218,22 +228,47 @@ fn get_arch() -> Result<&'static str> {
 fn load_modules() -> Result<Vec<Module>> {
     let arch = get_arch()?;
     debug!("Daemon architecture: {arch}");
+    load_modules_from(Path::new(constants::PATH_MODULES_DIR), arch, false)
+}
 
+/// Cold boot keeps the existing best-effort loading behavior. A refresh must
+/// finish completely before publishing a replacement for the active snapshot.
+fn load_modules_from(root: &Path, arch: &str, strict: bool) -> Result<Vec<Module>> {
     let mut modules = Vec::new();
-    let dir = match fs::read_dir(constants::PATH_MODULES_DIR) {
+    let dir = match fs::read_dir(root) {
         Ok(dir) => dir,
         Err(e) => {
+            if strict {
+                return Err(e).context("Failed to scan modules for refresh");
+            }
             warn!("Failed to read modules directory: {}", e);
             return Ok(modules);
         }
     };
 
-    for entry in dir.flatten() {
+    for entry in dir {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) if strict => return Err(e).context("Failed to enumerate modules for refresh"),
+            Err(_) => continue,
+        };
         let name = entry.file_name().into_string().unwrap_or_default();
         let so_path = entry.path().join(format!("zygisk/{arch}.so"));
         let disabled_flag = entry.path().join("disable");
 
-        if !so_path.exists() || disabled_flag.exists() {
+        let (library_exists, disabled) = if strict {
+            (
+                so_path
+                    .try_exists()
+                    .context("Failed to inspect module library")?,
+                disabled_flag
+                    .try_exists()
+                    .context("Failed to inspect module disable flag")?,
+            )
+        } else {
+            (so_path.exists(), disabled_flag.exists())
+        };
+        if !library_exists || disabled {
             continue;
         }
 
@@ -243,16 +278,36 @@ fn load_modules() -> Result<Vec<Module>> {
                 modules.push(Module {
                     name,
                     lib_fd,
-                    companion: Mutex::new(None),
+                    companion: Mutex::new(CompanionState::default()),
                 });
             }
             Err(e) => {
+                if strict {
+                    return Err(e).context(format!("Failed to refresh module `{}`", name));
+                }
                 warn!("Failed to create memfd for `{}`: {}", name, e);
             }
         };
     }
 
     Ok(modules)
+}
+
+fn refresh_modules(context: &mut Arc<AppContext>, root: &Path, arch: &str) -> Result<()> {
+    let modules = load_modules_from(root, arch, true);
+    for module in &context.modules {
+        let mut companion = module.companion.lock().unwrap();
+        companion.socket.take();
+        // Preserve the old usable snapshot on a failed scan, but still perform
+        // the companion reset that the previous restart handler provided.
+        companion.retired = modules.is_ok();
+    }
+    let modules = modules.context("Module refresh failed; retaining previous libraries")?;
+    *context = Arc::new(AppContext {
+        modules,
+        mount_manager: Arc::clone(&context.mount_manager),
+    });
+    Ok(())
 }
 
 /// Creates a sealed, read-only memfd containing the module's shared library.
@@ -356,7 +411,7 @@ fn handle_update_mount_namespace(stream: &mut UnixStream, context: &AppContext) 
         stream.write_u8(1)?;
         stream.send_fd(fd)?;
     } else {
-        // FAILURE: Send Status '0'. 
+        // FAILURE: Send Status '0'.
         // Do NOT send an FD or random u32 bytes, just stop here.
         warn!("Namespace {:?} is not cached yet.", namespace_type);
         stream.write_u8(0)?;
@@ -375,8 +430,16 @@ fn handle_read_modules(stream: &mut UnixStream, context: &AppContext) -> Result<
 
 fn handle_request_companion_socket(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
     let index = stream.read_usize()?;
-    let module = &context.modules[index];
-    let mut companion = module.companion.lock().unwrap();
+    let Some(module) = context.modules.get(index) else {
+        stream.write_u8(0)?;
+        return Ok(());
+    };
+    let mut state = module.companion.lock().unwrap();
+    if state.retired {
+        stream.write_u8(0)?;
+        return Ok(());
+    }
+    let companion = &mut state.socket;
 
     // Check if the existing companion socket is still alive.
     if let Some(sock) = companion.as_ref() {
@@ -428,9 +491,182 @@ fn handle_request_companion_socket(stream: &mut UnixStream, context: &AppContext
 
 fn handle_get_module_dir(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
     let index = stream.read_usize()?;
-    let module = &context.modules[index];
+    let module = context.modules.get(index).context("Invalid module index")?;
     let dir_path = format!("{}/{}", constants::PATH_MODULES_DIR, module.name);
     let dir = fs::File::open(dir_path)?;
     stream.send_fd(dir.as_raw_fd())?;
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::os::unix::fs::FileExt;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    const ARCH: &str = "arm64-v8a";
+    static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "neozygisk-modules-{}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn library(&self, name: &str, content: &[u8]) -> PathBuf {
+            let path = self.0.join(name).join("zygisk").join(format!("{ARCH}.so"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, content).unwrap();
+            path
+        }
+
+        fn context(&self) -> Arc<AppContext> {
+            Arc::new(AppContext {
+                modules: load_modules_from(&self.0, ARCH, false).unwrap(),
+                mount_manager: Arc::new(MountNamespaceManager::new()),
+            })
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    fn contents(fd: &OwnedFd) -> Vec<u8> {
+        let file = fs::File::from(fd.try_clone().unwrap());
+        let mut bytes = vec![0; file.metadata().unwrap().len() as usize];
+        file.read_exact_at(&mut bytes, 0).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn refresh_updates_sealed_library_and_keeps_inflight_snapshot_consistent() {
+        let fixture = Fixture::new();
+        fixture.library("module", b"previous library");
+        let mut current = fixture.context();
+        let inflight = Arc::clone(&current);
+        fixture.library("module", b"updated library with a different length");
+        refresh_modules(&mut current, &fixture.0, ARCH).unwrap();
+        assert_eq!(contents(&inflight.modules[0].lib_fd), b"previous library");
+        assert_eq!(
+            contents(&current.modules[0].lib_fd),
+            b"updated library with a different length"
+        );
+        assert!(!Arc::ptr_eq(&current, &inflight));
+        assert!(Arc::ptr_eq(&current.mount_manager, &inflight.mount_manager));
+        let file = fs::File::from(current.modules[0].lib_fd.try_clone().unwrap());
+        assert_eq!(
+            file.write_at(b"x", 0).unwrap_err().raw_os_error(),
+            Some(libc::EPERM)
+        );
+
+        // Exercise the actual response framing and SCM_RIGHTS transfer, not
+        // just the cache fields. A request owns one complete generation.
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let worker = thread::spawn(move || handle_read_modules(&mut server, &inflight));
+        assert_eq!(client.read_usize().unwrap(), 1);
+        assert_eq!(client.read_string().unwrap(), "module");
+        use std::os::fd::FromRawFd;
+        let received = unsafe { OwnedFd::from_raw_fd(client.recv_fd().unwrap()) };
+        assert_eq!(contents(&received), b"previous library");
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn restart_rescans_added_disabled_removed_and_reenabled_modules() {
+        let fixture = Fixture::new();
+        fixture.library("one", b"1");
+        let mut current = fixture.context();
+        fixture.library("two", b"2");
+        fs::write(fixture.0.join("one/disable"), b"").unwrap();
+        refresh_modules(&mut current, &fixture.0, ARCH).unwrap();
+        assert_eq!(current.modules.len(), 1);
+        assert_eq!(current.modules[0].name, "two");
+        fs::remove_dir_all(fixture.0.join("two")).unwrap();
+        fs::remove_file(fixture.0.join("one/disable")).unwrap();
+        refresh_modules(&mut current, &fixture.0, ARCH).unwrap();
+        assert_eq!(current.modules.len(), 1);
+        assert_eq!(current.modules[0].name, "one");
+    }
+
+    #[test]
+    fn failed_refresh_preserves_complete_snapshot_and_still_closes_companion() {
+        let fixture = Fixture::new();
+        let path = fixture.library("module", b"working library");
+        let mut current = fixture.context();
+        let previous = Arc::clone(&current);
+        let (mut peer, companion) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        current.modules[0].companion.lock().unwrap().socket = Some(companion);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap(); // Existing path, but copying it must fail.
+        assert!(refresh_modules(&mut current, &fixture.0, ARCH).is_err());
+        assert!(Arc::ptr_eq(&current, &previous));
+        assert_eq!(contents(&current.modules[0].lib_fd), b"working library");
+        assert!(!current.modules[0].companion.lock().unwrap().retired);
+        assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
+        assert!(refresh_modules(&mut current, &fixture.0.join("missing"), ARCH).is_err());
+        assert!(Arc::ptr_eq(&current, &previous));
+        fs::remove_dir(&path).unwrap();
+        std::os::unix::fs::symlink(path.file_name().unwrap(), &path).unwrap();
+        // An inspection error must not silently turn an enabled module into a
+        // missing module and publish a partial replacement list.
+        assert!(refresh_modules(&mut current, &fixture.0, ARCH).is_err());
+        assert!(Arc::ptr_eq(&current, &previous));
+    }
+
+    #[test]
+    fn retired_worker_cannot_start_an_old_companion_and_invalid_ids_do_not_panic() {
+        let fixture = Fixture::new();
+        fixture.library("module", b"library");
+        let mut current = fixture.context();
+        let previous = Arc::clone(&current);
+        let (mut peer, companion) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        previous.modules[0].companion.lock().unwrap().socket = Some(companion);
+        refresh_modules(&mut current, &fixture.0, ARCH).unwrap();
+        assert!(previous.modules[0].companion.lock().unwrap().retired);
+        assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
+        for (context, index) in [(&previous, 0), (&current, usize::MAX)] {
+            let (mut server, mut client) = UnixStream::pair().unwrap();
+            client.write_usize(index).unwrap();
+            handle_request_companion_socket(&mut server, context).unwrap();
+            assert_eq!(client.read_u8().unwrap(), 0);
+        }
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        client.write_usize(usize::MAX).unwrap();
+        assert!(handle_get_module_dir(&mut server, &current).is_err());
+    }
+
+    #[test]
+    fn repeated_refreshes_release_previous_snapshots() {
+        let fixture = Fixture::new();
+        fixture.library("module", b"first");
+        let mut current = fixture.context();
+        for generation in 0..64 {
+            let previous = Arc::downgrade(&current);
+            fixture.library("module", generation.to_string().as_bytes());
+            refresh_modules(&mut current, &fixture.0, ARCH).unwrap();
+            assert!(previous.upgrade().is_none());
+            assert_eq!(
+                contents(&current.modules[0].lib_fd),
+                generation.to_string().as_bytes()
+            );
+        }
+    }
 }
