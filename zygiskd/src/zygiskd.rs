@@ -16,11 +16,9 @@ use crate::{constants, lp_select, root_impl};
 use anyhow::{Context as AnyhowContext, Result, bail};
 use log::{debug, error, info, trace, warn};
 use passfd::FdPassingExt;
-use rustix::io::{FdFlags, fcntl_setfd};
 use std::fs;
-use std::io::Error;
 use std::os::fd::AsRawFd;
-use std::os::fd::{AsFd, OwnedFd, RawFd};
+use std::os::fd::{OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::{
     os::unix::net::{UnixListener, UnixStream},
@@ -302,54 +300,22 @@ fn spawn_companion(name: &str, lib_fd: RawFd) -> Result<Option<UnixStream>> {
     let self_exe = std::env::args().next().unwrap();
     let nice_name = self_exe.split('/').last().unwrap_or("zygiskd");
 
-    // The fork/exec logic is now handled directly here.
-    // # Safety
-    // This is highly unsafe because it uses `fork()` and `exec()`. The child
-    // process must not call any non-async-signal-safe functions before `exec()`.
-    unsafe {
-        let pid = libc::fork();
-        if pid < 0 {
-            // Fork failed
-            bail!(Error::last_os_error());
-        }
+    // Construct arguments before spawning; a dedicated owner waits even when
+    // setup fails or a restart drops the control socket much later.
+    let mut command = Command::new(&self_exe);
+    command
+        .arg0(format!("{}-{}", nice_name, name))
+        .arg("companion")
+        .arg(companion_sock.as_raw_fd().to_string());
+    crate::child::spawn_and_reap(command, companion_sock.into())
+        .context("Failed to spawn companion")?;
 
-        if pid == 0 {
-            // --- Child Process ---
-            drop(daemon_sock); // Child doesn't need the daemon's end of the socket.
-
-            // The companion socket FD must be passed to the new process,
-            // so we must remove the `FD_CLOEXEC` flag.
-            fcntl_setfd(companion_sock.as_fd(), FdFlags::empty())
-                .expect("Failed to clear CLOEXEC on companion socket");
-
-            // The first argument (`arg0`) is used to set a descriptive process name.
-            let arg0 = format!("{}-{}", nice_name, name);
-            let companion_fd_str = format!("{}", companion_sock.as_raw_fd());
-
-            // exec replaces the current process; it does not return on success.
-            let err = Command::new(&self_exe)
-                .arg0(arg0)
-                .arg("companion")
-                .arg(companion_fd_str)
-                .exec();
-
-            // If exec returns, it's always an error.
-            bail!("exec failed: {}", err);
-        }
-
-        // --- Parent Process ---
-        drop(companion_sock); // Parent doesn't need the companion's end of the socket.
-
-        // Now, establish communication with the newly spawned companion.
-        daemon_sock.write_string(name)?;
-        daemon_sock.send_fd(lib_fd)?;
-
-        // Wait for the companion's response to know if it loaded the module successfully.
-        match daemon_sock.read_u8()? {
-            0 => Ok(None),              // Module has no companion entry point or failed to load.
-            1 => Ok(Some(daemon_sock)), // Companion is ready.
-            _ => bail!("Invalid response from companion setup"),
-        }
+    daemon_sock.write_string(name)?;
+    daemon_sock.send_fd(lib_fd)?;
+    match daemon_sock.read_u8()? {
+        0 => Ok(None),              // No companion entry point or failed to load.
+        1 => Ok(Some(daemon_sock)), // Companion is ready.
+        _ => bail!("Invalid response from companion setup"),
     }
 }
 

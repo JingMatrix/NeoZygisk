@@ -73,6 +73,7 @@
 //! - `version`: Prints the daemon version.
 //! - `root`: Detects and prints the current root implementation.
 
+mod child;
 mod companion;
 mod constants;
 mod dl;
