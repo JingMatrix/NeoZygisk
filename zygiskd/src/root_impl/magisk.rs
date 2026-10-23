@@ -4,7 +4,10 @@
 
 use crate::constants::MIN_MAGISK_VERSION;
 use log::{debug, info};
+#[cfg(target_os = "android")]
 use std::os::android::fs::MetadataExt;
+#[cfg(all(test, target_os = "linux"))]
+use std::os::linux::fs::MetadataExt;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::{fs, str};
