@@ -44,6 +44,9 @@ private:
     Status status_;
     StartCounter counter;
 
-    const char* const tracer_path_;
+    // Absolute paths, resolved once at startup: the module directory may be replaced
+    // (module reinstall) while the monitor keeps running, which breaks relative paths.
+    const std::string bin_dir_;
+    const std::string tracer_path_;
     AppMonitor& monitor_;
 };

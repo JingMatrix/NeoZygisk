@@ -3,6 +3,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <climits>
 #include <csignal>
 
 #include "daemon.hpp"
@@ -10,10 +11,24 @@
 #include "monitor.hpp"
 #include "utils.hpp"
 
+// Directory holding our own executable, e.g. /data/adb/modules/zygisksu/bin.
+static std::string resolve_bin_dir() {
+    char buf[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len <= 0) {
+        PLOGE("readlink /proc/self/exe");
+        return "./bin";
+    }
+    std::string path(buf, len);
+    auto slash = path.rfind('/');
+    return slash == std::string::npos ? "./bin" : path.substr(0, slash);
+}
+
 ZygoteAbiManager::ZygoteAbiManager(AppMonitor& monitor, bool is_64bit)
     : abi_name_(is_64bit ? "64" : "32"),
       program_path_(is_64bit ? "/system/bin/app_process64" : "/system/bin/app_process32"),
-      tracer_path_(is_64bit ? "./bin/zygisk-ptrace64" : "./bin/zygisk-ptrace32"),
+      bin_dir_(resolve_bin_dir()),
+      tracer_path_(bin_dir_ + (is_64bit ? "/zygisk-ptrace64" : "/zygisk-ptrace32")),
       monitor_(monitor) {}
 
 const Status& ZygoteAbiManager::get_status() const { return status_; }
@@ -48,7 +63,7 @@ bool ZygoteAbiManager::ensure_daemon_created() {
             return false;
         }
         if (pid == 0) {
-            std::string daemon_name = "./bin/zygiskd";
+            std::string daemon_name = bin_dir_ + "/zygiskd";
             daemon_name += abi_name_;
             execl(
                 daemon_name.c_str(),
@@ -76,7 +91,7 @@ const char* ZygoteAbiManager::check_and_prepare_injection() {
         monitor_.request_stop("daemon not running");
         return nullptr;
     }
-    return tracer_path_;
+    return tracer_path_.c_str();
 }
 
 bool ZygoteAbiManager::handle_daemon_exit_if_match(int pid, int process_status) {
