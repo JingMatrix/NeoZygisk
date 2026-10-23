@@ -81,6 +81,8 @@ ScrubStatus AtexitArray::recompact(int &protect_errno) {
 
     if (!has_fingerprint()) return ScrubStatus::kNothingToScrub;
 
+    bool restored = true;
+
     // Null holes are the only thing that needs the array pages opened up. When __cxa_finalize
     // already compacted them away, rewinding the append counter below is the whole scrub, and we
     // can leave the mapping's protections untouched.
@@ -118,7 +120,13 @@ ScrubStatus AtexitArray::recompact(int &protect_errno) {
                     MADV_DONTNEED);
         }
 
-        set_writable(false, 0, size_);
+        // Restoring the original protection has to be reported too. Bionic treats this mprotect
+        // as fatal, and leaving the array writable for the rest of the process costs libc the
+        // hardening the read-only resting state buys it. Re-protecting the same range we opened
+        // normally merges VMAs rather than splitting any, so this is far less likely to fail than
+        // the call above, but it is not guaranteed.
+        restored = set_writable(false, 0, size_);
+        if (!restored) protect_errno = errno;
 
         size_ = dst;
         extracted_count_ = 0;
@@ -127,7 +135,7 @@ ScrubStatus AtexitArray::recompact(int &protect_errno) {
     // Unlike bionic, we also rewind the append counter: a count that outruns the live entries is
     // what tells a detector that handlers came and went.
     total_appends_ = size_;
-    return ScrubStatus::kDone;
+    return restored ? ScrubStatus::kDone : ScrubStatus::kLeftWritable;
 }
 
 // Use mprotect to make the array writable or read-only. Returns true on success, and leaves errno
@@ -161,6 +169,8 @@ const char *describe(ScrubStatus status) {
         return "atexit lock held by another thread";
     case ScrubStatus::kNotWritable:
         return "array could not be made writable";
+    case ScrubStatus::kLeftWritable:
+        return "array compacted but left writable";
     }
     return "unknown";
 }
@@ -198,9 +208,10 @@ ScrubStatus scrubFingerprint() {
 
     // Logging only once the lock is released, so that a liblog path reaching __cxa_atexit cannot
     // deadlock on it.
-    if (status == ScrubStatus::kNotWritable) {
+    if (status == ScrubStatus::kNotWritable || status == ScrubStatus::kLeftWritable) {
         LOGE("mprotect on atexit array failed with %d: %s", protect_errno, strerror(protect_errno));
-    } else {
+    }
+    if (status != ScrubStatus::kNotWritable) {
         LOGV("g_array after scrub: %s", g_array->format_state_string().c_str());
     }
 

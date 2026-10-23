@@ -55,6 +55,7 @@ enum class ScrubStatus {
     kNoLock,          // libc's atexit mutex could not be located, so we cannot mutate safely
     kLockBusy,        // another thread is registering or running handlers right now
     kNotWritable,     // mprotect refused to open up the array pages
+    kLeftWritable,    // the array was compacted, but could not be protected read-only again
 };
 
 const char* describe(ScrubStatus status);
