@@ -17,19 +17,19 @@ jobs:
       # 1. SETUP ENVIRONMENT
       # ====================================================================
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: "recursive"
           fetch-depth: 0 # Needed for versioning from git history
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: "temurin"
           java-version: "21"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Setup Rust toolchain
         run: |
@@ -81,25 +81,25 @@ jobs:
           unzip "$DEBUG_ZIP" -d "debug-artifact"
 
       - name: Upload Release Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepare_artifacts.outputs.RELEASE_NAME }}
           path: release-artifact/
 
       - name: Upload Debug Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepare_artifacts.outputs.DEBUG_NAME }}
           path: debug-artifact/
 
       - name: Upload Release Symbols
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-symbols
           path: zygiskd/build/symbols/release/
 
       - name: Upload Debug Symbols
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: debug-symbols
           path: zygiskd/build/symbols/debug/

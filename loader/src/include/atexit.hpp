@@ -17,13 +17,13 @@
 
 namespace Atexit {
 
+// Bionic resolves this through AT_PAGESZ on every architecture that can boot with pages larger
+// than 4 KiB. The NDK, in contrast, still hands us a compile-time PAGE_SIZE of 4096 on arm64
+// (bits/page_size.h keeps the macro for __NDK_MAJOR__ <= 27), so trusting the macro would give us
+// a different view of the array's pages than libc has on a 16 KiB-page device.
 inline size_t page_size() {
-#if defined(PAGE_SIZE)
-    return PAGE_SIZE;
-#else
     static const size_t page_size = getauxval(AT_PAGESZ);
     return page_size;
-#endif
 }
 
 // The maximum page size supported on any Android device. As
@@ -45,6 +45,20 @@ inline uintptr_t page_offset(uintptr_t x) { return x & (page_size() - 1); }
 // Returns the address of the next page after address 'x', unless 'x' is
 // itself at the start of a page.
 inline uintptr_t page_end(uintptr_t x) { return page_start(x + page_size() - 1); }
+
+// Why a fingerprint scrub stopped where it did. The caller reports this once libc's atexit lock is
+// released, never from inside the critical section.
+enum class ScrubStatus {
+    kDone,            // the array was compacted and its counters rewound
+    kNothingToScrub,  // libc's array carries no trace of the modules we unloaded
+    kNoArray,         // libc's private atexit array could not be located
+    kNoLock,          // libc's atexit mutex could not be located, so we cannot mutate safely
+    kLockBusy,        // another thread is registering or running handlers right now
+    kNotWritable,     // mprotect refused to open up the array pages
+    kLeftWritable,    // the array was compacted, but could not be protected read-only again
+};
+
+const char* describe(ScrubStatus status);
 
 struct AtexitEntry {
     void (*fn)(void*);  // the __cxa_atexit callback
@@ -90,7 +104,17 @@ public:
     uint64_t total_appends() const { return total_appends_; }
     const AtexitEntry& operator[](size_t idx) const { return array_[idx]; }
 
-    void recompact();
+    // Compacts the array in place and rewinds the counters that give our unloaded modules away.
+    //
+    // The caller must hold libc's atexit lock. __cxa_atexit and __cxa_finalize mutate the array,
+    // its page protections and even its mapping (append_entry() mremaps it to grow) under that
+    // lock; flipping the pages back to PROT_READ behind their back makes their store fault with
+    // SEGV_ACCERR, and moving entries while they append loses or corrupts them.
+    //
+    // The caller must also keep logging out of that critical section, since liblog can reach
+    // __cxa_atexit and deadlock on the very mutex we hold. An mprotect failure is therefore
+    // reported through `protect_errno` instead of a log line.
+    ScrubStatus recompact(int& protect_errno);
 
 private:
     AtexitEntry* array_;
@@ -105,14 +129,16 @@ private:
     static size_t page_start_of_index(size_t idx) { return page_start(idx * sizeof(AtexitEntry)); }
     static size_t page_end_of_index(size_t idx) { return page_end(idx * sizeof(AtexitEntry)); }
 
-    // Recompact the array if it will save at least one page of memory at the end.
-    bool needs_recompaction() const {
-        return page_end_of_index(size_ - extracted_count_) < page_end_of_index(size_);
-    }
+    // True while the array still shows that handlers were registered and then removed: either null
+    // holes left behind by __cxa_finalize, or an append counter that outruns the live entries.
+    // Bionic instead asks whether compaction would free a page, which is not our concern here.
+    bool has_fingerprint() const { return extracted_count_ > 0 || total_appends_ > size_; }
 
-    void set_writable(bool writable, size_t start_idx, size_t num_entries);
+    bool set_writable(bool writable, size_t start_idx, size_t num_entries);
 };
 
-AtexitArray* findAtexitArray();
+// Erases the traces that unloading our modules left in libc's exit-handler array. Best effort:
+// every obstacle leaves libc's state exactly as it was.
+ScrubStatus scrubFingerprint();
 
 }  // namespace Atexit

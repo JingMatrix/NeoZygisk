@@ -18,10 +18,9 @@
 #include "zygisk.hpp"
 
 void clean_libc_trace() {
-    auto g_array = Atexit::findAtexitArray();
-    if (g_array != nullptr) {
-        g_array->recompact();
-        LOGV("g_array after recompact: %s", g_array->format_state_string().c_str());
+    const auto status = Atexit::scrubFingerprint();
+    if (status != Atexit::ScrubStatus::kDone && status != Atexit::ScrubStatus::kNothingToScrub) {
+        LOGW("atexit fingerprint left in place: %s", Atexit::describe(status));
     }
 }
 
