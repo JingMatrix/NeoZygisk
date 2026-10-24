@@ -41,14 +41,24 @@ impl TryFrom<u8> for MountNamespace {
 
 /// Switches the current thread into the mount namespace of a given process.
 pub fn switch_mount_namespace(pid: i32) -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    // Entering the namespace is the point of this call. Saving and restoring the working
+    // directory around it is a convenience and must not be able to fail it: a module
+    // update can have renamed the tree this process was started from.
+    let cwd = std::env::current_dir();
     let mnt_ns_file = fs::File::open(format!("/proc/{}/ns/mnt", pid))?;
     rustix_thread::move_into_link_name_space(
         mnt_ns_file.as_fd(),
         Some(rustix_thread::LinkNameSpaceType::Mount),
     )?;
     // `setns` can change the current working directory, so we restore it.
-    std::env::set_current_dir(cwd)?;
+    match cwd {
+        Ok(cwd) => {
+            if let Err(e) = std::env::set_current_dir(&cwd) {
+                debug!("Could not restore the working directory {:?}: {}", cwd, e);
+            }
+        }
+        Err(e) => debug!("Could not read the working directory to restore it: {}", e),
+    }
     Ok(())
 }
 
@@ -126,9 +136,19 @@ impl MountNamespaceManager {
                 // --- Parent Process ---
                 drop(pipe_writer);
 
-                // Wait for the signal from the child.
+                // Wait for the signal from the child. A short read means the child died
+                // before signalling, so its namespace is not ready and /proc/<pid>/ns/mnt
+                // would be gone by the time we opened it.
                 let mut buf: [u8; 1] = [0];
-                rustix::io::read(pipe_reader, &mut buf)?;
+                if rustix::io::read(pipe_reader, &mut buf)? == 0 {
+                    unsafe {
+                        libc::waitpid(child_pid, std::ptr::null_mut(), 0);
+                    }
+                    bail!(
+                        "child {} exited before setting up the mount namespace",
+                        child_pid
+                    );
+                }
                 trace!("Child {} finished setting up mount namespace.", child_pid);
 
                 let ns_path = format!("/proc/{}/ns/mnt", child_pid);

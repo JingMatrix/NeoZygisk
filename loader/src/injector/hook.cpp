@@ -217,6 +217,12 @@ ZygiskContext::~ZygiskContext() {
     }
 
     // Cleanup
+    //
+    // The late system_server path runs the module lifecycle without installing the zygote
+    // hooks, so there is no HookContext to tear down: no zygote hook to restore, and no
+    // unloader PLT hook to act on should_unmap.
+    if (g_hook == nullptr) return;
+
     g_hook->should_unmap = true;
     g_hook->restore_zygote_hook(env);
 }

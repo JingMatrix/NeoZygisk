@@ -117,6 +117,7 @@ public:
     void request_start();
     void request_stop(std::string reason);
     void request_exit();
+    void request_rearm();
     void notify_init_detached();
 
     // Public Accessors for owned components
@@ -168,7 +169,8 @@ private:
     };
 
     void set_tracing_state(TracingState state);
-    void write_abi_status_section(std::string &status_text, const Status &daemon_status);
+    void write_abi_status_section(std::string &status_text, std::string &daemon_detail,
+                                  const Status &daemon_status);
 
     // Owned Components (Declaration order must match initializer list)
     EventLoop event_loop_;
@@ -180,6 +182,8 @@ private:
     TracingState tracing_state_;
     std::string monitor_stop_reason_;
     std::string prop_path_;
-    std::string pre_section_;
-    std::string post_section_;
+    // The status readout, in the order it is rendered: the module's own metadata, then
+    // the live state, then whatever the daemon reports, then the closing description.
+    std::string metadata_section_;
+    std::string description_;
 };

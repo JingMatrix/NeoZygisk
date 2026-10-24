@@ -65,6 +65,7 @@ enum class SocketAction {
     GetModuleDir,
     ZygoteRestart,
     SystemServerStarted,
+    RefreshModules,
 };
 
 enum class MountNamespace { Clean, Root };
@@ -92,4 +93,8 @@ int GetModuleDir(size_t index);
 void ZygoteRestart();
 
 void SystemServerStarted();
+
+/// Asks the daemon to rebuild its module snapshot from disk, and waits for the result.
+/// Synchronous on purpose: the rearm path must not inject against a stale snapshot.
+bool RefreshModules();
 }  // namespace zygiskd

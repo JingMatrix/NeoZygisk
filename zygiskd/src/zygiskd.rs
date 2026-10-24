@@ -26,7 +26,7 @@ use std::{
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
     process::Command,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
     thread,
 };
 
@@ -40,8 +40,39 @@ struct Module {
 
 /// The shared context for the daemon, containing all loaded modules and a mount namespace manager
 struct AppContext {
-    modules: Vec<Module>,
+    /// The live module snapshot, replaced wholesale by `RefreshModules`.
+    ///
+    /// Under a temp root the daemon outlives module promotions, hot installs and whole
+    /// root sessions, so the set it serves has to be replaceable. Handing each request an
+    /// `Arc` of the snapshot keeps in-flight work on the set it started with, and retiring
+    /// a snapshot drops its companions with it.
+    modules: RwLock<Arc<Vec<Module>>>,
     mount_manager: Arc<MountNamespaceManager>,
+}
+
+impl AppContext {
+    /// Takes a reference to the current snapshot. Held only long enough to clone the
+    /// `Arc`, so a refresh is never blocked by a slow reader.
+    fn modules(&self) -> Arc<Vec<Module>> {
+        Arc::clone(&self.modules.read().unwrap())
+    }
+
+    /// Rescans the module directory and publishes the result.
+    ///
+    /// The new snapshot is built completely before anything is published, so a scan that
+    /// fails leaves the daemon serving the previous set rather than an empty or partial
+    /// one. Returns the number of modules now live.
+    fn refresh_modules(&self) -> Result<usize> {
+        let modules = load_modules().context("Failed to rescan the module directory")?;
+        let count = modules.len();
+        let names: Vec<_> = modules.iter().map(|m| m.name.clone()).collect();
+        // The previous snapshot is dropped once the last in-flight reader releases it,
+        // which closes its library memfds and its companion sockets. A companion whose
+        // socket is closed has no remaining caller, so it exits on its own.
+        *self.modules.write().unwrap() = Arc::new(modules);
+        info!("Module snapshot refreshed: {} module(s) {:?}", count, names);
+        Ok(count)
+    }
 }
 
 // Global paths, initialized once at startup.
@@ -59,7 +90,7 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
 
     let mount_manager = Arc::new(MountNamespaceManager::new());
     let context = Arc::new(AppContext {
-        modules,
+        modules: RwLock::new(Arc::new(modules)),
         mount_manager,
     });
     let listener = create_daemon_socket()?;
@@ -80,31 +111,31 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
 
 /// Handles a single incoming connection from Zygisk.
 fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result<()> {
-    // Kernel-verified peer admission.
-    //
-    // Every connection the daemon legitimately accepts is opened while the caller is
-    // still root or system at connect() time:
-    //   - zygote (uid 0) during injection and the whole pre-specialization window
-    //     (ReadModules, GetProcessFlags, CacheMountNamespace, UpdateMountNamespace via
-    //     the hooked unshare(), and the companion request);
-    //   - system_server (uid 1000) on the late-injection path;
-    //   - the root tracer (uid 0) for ZygoteRestart.
-    // The loader makes no daemon connection after a process drops to its app uid, and the
-    // app<->companion channel is a handed-off fd that never re-enters this accept path. So
-    // any connection presenting another uid is illegitimate. SO_PEERCRED is captured by the
-    // kernel at connect() time and cannot be spoofed, so we reject such peers here.
+    // Every legitimate connection is opened while the caller is still root or system:
+    // zygote (uid 0) throughout injection and the pre-specialization window, a
+    // late-injected system_server (uid 1000), and the root tracer. The loader opens none
+    // after a process has dropped to its app uid, and the app-to-companion channel is a
+    // handed-off fd that never re-enters this accept path, so any other uid here is
+    // illegitimate. SO_PEERCRED is recorded by the kernel at connect() time and cannot be
+    // spoofed.
     const AID_ROOT: u32 = 0;
     const AID_SYSTEM: u32 = 1000;
     match rustix::net::sockopt::socket_peercred(&stream) {
         Ok(cred) => {
             let uid = cred.uid.as_raw();
             if uid != AID_ROOT && uid != AID_SYSTEM {
-                warn!("Rejecting daemon connection from untrusted peer: {:?}", cred);
+                warn!(
+                    "Rejecting daemon connection from untrusted peer: {:?}",
+                    cred
+                );
                 return Ok(());
             }
         }
         Err(e) => {
-            warn!("Rejecting daemon connection: cannot read peer credentials: {}", e);
+            warn!(
+                "Rejecting daemon connection: cannot read peer credentials: {}",
+                e
+            );
             return Ok(());
         }
     }
@@ -131,13 +162,24 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
         }
         DaemonSocketAction::ZygoteRestart => {
             info!("Zygote restarted, cleaning up companion sockets.");
-            for module in &context.modules {
+            for module in context.modules().iter() {
                 module.companion.lock().unwrap().take();
             }
         }
         DaemonSocketAction::SystemServerStarted => {
             let value = constants::SYSTEM_SERVER_STARTED;
             utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &value.to_le_bytes())?;
+        }
+        DaemonSocketAction::RefreshModules => {
+            // Synchronous: the rearm path waits for this before injecting anything.
+            let ok = match context.refresh_modules() {
+                Ok(_) => 1u8,
+                Err(e) => {
+                    warn!("Failed to refresh the module snapshot: {:?}", e);
+                    0u8
+                }
+            };
+            stream.write_u8(ok)?;
         }
         // Heavier actions are spawned into a separate thread.
         _ => {
@@ -210,15 +252,17 @@ fn send_startup_info(modules: &[Module]) -> Result<()> {
         | root_impl::RootImpl::Magisk => {
             msg.extend_from_slice(&constants::DAEMON_SET_INFO.to_le_bytes());
             let module_names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+            // Indented one level, to stand as its own block in the status readout, with
+            // module names one level deeper again under their count.
             if !module_names.is_empty() {
                 format!(
-                    "\t\tRoot: {:?}\n\t\tModules ({}):\n\t\t\t{}",
+                    "\tRoot: {:?}\n\tModules ({}):\n\t\t{}",
                     root_impl::get(),
                     modules.len(),
-                    module_names.join("\n\t\t\t")
+                    module_names.join("\n\t\t")
                 )
             } else {
-                format!("\t\tRoot: {:?}", root_impl::get())
+                format!("\tRoot: {:?}", root_impl::get())
             }
         }
         _ => {
@@ -428,17 +472,40 @@ fn handle_update_mount_namespace(stream: &mut UnixStream, context: &AppContext) 
 }
 
 fn handle_read_modules(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
-    stream.write_usize(context.modules.len())?;
-    for module in &context.modules {
+    // One snapshot for the whole reply, so the count written first always matches the
+    // number of entries that follow even if a refresh lands mid-reply.
+    let modules = context.modules();
+    stream.write_usize(modules.len())?;
+    for module in modules.iter() {
         stream.write_string(&module.name)?;
         stream.send_fd(module.lib_fd.as_raw_fd())?;
     }
     Ok(())
 }
 
+/// Resolves a client-supplied module index against a snapshot.
+///
+/// The index comes from a previous `ReadModules` reply, so a client holding one from a
+/// retired snapshot can present an index this one no longer has.
+fn module_at(modules: &Arc<Vec<Module>>, index: usize) -> Result<&Module> {
+    modules
+        .get(index)
+        .with_context(|| format!("Module index {} is out of range ({})", index, modules.len()))
+}
+
 fn handle_request_companion_socket(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
     let index = stream.read_usize()?;
-    let module = &context.modules[index];
+    let modules = context.modules();
+    let module = match module_at(&modules, index) {
+        Ok(module) => module,
+        Err(e) => {
+            warn!("{}", e);
+            // Tell the client no companion is available rather than dropping the
+            // connection, which is what it already handles.
+            stream.write_u8(0)?;
+            return Ok(());
+        }
+    };
     let mut companion = module.companion.lock().unwrap();
 
     // Check if the existing companion socket is still alive.
@@ -491,7 +558,8 @@ fn handle_request_companion_socket(stream: &mut UnixStream, context: &AppContext
 
 fn handle_get_module_dir(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
     let index = stream.read_usize()?;
-    let module = &context.modules[index];
+    let modules = context.modules();
+    let module = module_at(&modules, index)?;
     let dir_path = format!("{}/{}", constants::PATH_MODULES_DIR, module.name);
     let dir = fs::File::open(dir_path)?;
     stream.send_fd(dir.as_raw_fd())?;
