@@ -326,7 +326,7 @@ void ZygiskContext::run_modules_post() {
         if (it->tryUnload()) modules_unloaded++;
     }
 
-    if (modules.size() > 0) {
+    if (modules.size() > 0 && g_hook != nullptr) {
         LOGV("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         if (modules.size() == modules_unloaded) clean_libc_trace();
         // "zygisk-module" is the memfd name (zygiskd.rs:264); b4d31ab fixed the same

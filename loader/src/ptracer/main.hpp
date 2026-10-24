@@ -1,7 +1,9 @@
 #pragma once
 
+#include "trace.hpp"
+
 void init_monitor();
-bool trace_zygote(int pid);
+bool trace_target(int pid, TraceMode mode);
 
 enum Command {
     START = 1,
