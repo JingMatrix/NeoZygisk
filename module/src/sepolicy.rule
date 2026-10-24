@@ -2,6 +2,14 @@ type zygisk_file file_type
 typeattribute zygisk_file mlstrustedobject
 allow zygote zygisk_file sock_file {read write}
 
+# Late load injects a system_server that is already running, and the injected library
+# pings the daemon before any mode-specific work, returning when that fails. It connects
+# as u:r:system_server:s0, so it needs the socket file and the listening socket. The
+# daemon creates that socket with the context u:r:zygote:s0, which is why connectto names
+# zygote rather than the daemon's own domain.
+allow system_server zygisk_file sock_file {read write}
+allow system_server zygote unix_stream_socket connectto
+
 allow zygote magisk lnk_file read
 allow zygote unlabeled file {read open}
 allow zygote zygote capability sys_chroot

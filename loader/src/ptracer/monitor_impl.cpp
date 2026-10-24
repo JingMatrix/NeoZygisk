@@ -35,34 +35,37 @@ TracingState AppMonitor::get_tracing_state() const { return tracing_state_; }
 
 void AppMonitor::set_tracing_state(TracingState state) { tracing_state_ = state; }
 
-void AppMonitor::write_abi_status_section(std::string &status_text, const Status &daemon_status) {
+void AppMonitor::write_abi_status_section(std::string &status_text, std::string &daemon_detail,
+                                          const Status &daemon_status) {
     auto abi_name = this->zygote_.abi_name_;
-    if (daemon_status.supported) {
-        status_text += "\tzygote";
-        status_text += abi_name;
-        status_text += ":";
-        if (tracing_state_ != TRACING)
-            status_text += "\t❓ unknown";
-        else if (daemon_status.zygote_injected)
-            status_text += "\t😋 injected";
-        else
-            status_text += "\t❌ not injected";
-        status_text += "\n\tdaemon";
-        status_text += abi_name;
-        status_text += ":";
-        if (daemon_status.daemon_running) {
-            status_text += "\t😋 running";
-            if (!daemon_status.daemon_info.empty()) {
-                status_text += "\n";
-                status_text += daemon_status.daemon_info;
-            }
-        } else {
-            status_text += "\t❌ crashed";
-            if (!daemon_status.daemon_error_info.empty()) {
-                status_text += "(";
-                status_text += daemon_status.daemon_error_info;
-                status_text += ")";
-            }
+    if (!daemon_status.supported) return;
+
+    // "monitor: ", "zygote64:" and "daemon64:" are all nine columns wide, so a single
+    // following tab lands every state in the same column.
+    status_text += "\n\tzygote";
+    status_text += abi_name;
+    status_text += ":";
+    if (tracing_state_ != TRACING)
+        status_text += "\t❓ unknown";
+    else if (daemon_status.zygote_injected)
+        status_text += "\t😋 injected";
+    else
+        status_text += "\t❌ not injected";
+
+    status_text += "\n\tdaemon";
+    status_text += abi_name;
+    status_text += ":";
+    if (daemon_status.daemon_running) {
+        status_text += "\t😋 running";
+        // What the daemon reports about itself -- the root implementation and the
+        // modules it loaded -- is a block of its own, not a continuation of this line.
+        daemon_detail = daemon_status.daemon_info;
+    } else {
+        status_text += "\t❌ crashed";
+        if (!daemon_status.daemon_error_info.empty()) {
+            status_text += " (";
+            status_text += daemon_status.daemon_error_info;
+            status_text += ")";
         }
     }
 }
@@ -74,7 +77,7 @@ void AppMonitor::update_status() {
         return;
     }
 
-    // Build the middle section of the status text.
+    // The live state of the monitor and of each ABI, as one aligned block.
     std::string status_text = "\tmonitor: \t";
     switch (tracing_state_) {
     case TRACING:
@@ -90,19 +93,26 @@ void AppMonitor::update_status() {
         break;
     }
     if (tracing_state_ != TRACING && !monitor_stop_reason_.empty()) {
-        status_text += "(";
+        status_text += " (";
         status_text += monitor_stop_reason_;
         status_text += ")";
     }
 
-    // Build the full content in a single stringstream for clarity.
+    std::string daemon_detail;
+    write_abi_status_section(status_text, daemon_detail, zygote_.get_status());
+
+    // Assemble as blocks separated by one blank line, so the layout follows what the
+    // information is rather than the order module.prop happens to list its keys. An
+    // absent block drops out instead of leaving a run of blank lines behind.
     std::stringstream ss;
-    ss << pre_section_ << "\n" << status_text << "\n\n";
-
-    std::string abi_section;
-    write_abi_status_section(abi_section, zygote_.get_status());
-
-    ss << abi_section << "\n\n" << post_section_;
+    for (const auto &block : {metadata_section_, status_text, daemon_detail, description_}) {
+        auto trimmed = std::string_view(block);
+        while (!trimmed.empty() && trimmed.back() == '\n') trimmed.remove_suffix(1);
+        if (trimmed.empty()) continue;
+        if (ss.tellp() > 0) ss << "\n\n";
+        ss << trimmed;
+    }
+    ss << "\n";
 
     std::string final_output = ss.str();
     fwrite(final_output.c_str(), 1, final_output.length(), prop_file.get());
@@ -116,15 +126,18 @@ bool AppMonitor::prepare_environment() {
         PLOGE("open original prop");
         return false;
     }
-    bool post = false;
+    // module.prop holds two things worth showing: the module's metadata, which belongs
+    // together in one block whatever order the file lists it in, and the description,
+    // which reads as the closing line of the readout.
     file_readline(false, orig_prop.get(), [&](std::string_view line) -> bool {
+        // A release feed URL is of no use in a status readout.
         if (line.starts_with("updateJson=")) return true;
         if (line.starts_with("description=")) {
-            post = true;
-            post_section_ += line.substr(sizeof("description"));
+            description_ += "\t";
+            description_ += line.substr(sizeof("description"));
         } else {
-            (post ? post_section_ : pre_section_) += "\t";
-            (post ? post_section_ : pre_section_) += line;
+            metadata_section_ += "\t";
+            metadata_section_ += line;
         }
         return true;
     });
@@ -132,12 +145,29 @@ bool AppMonitor::prepare_environment() {
     return true;
 }
 
-void AppMonitor::run() {
-    socket_handler_.Init();
-    ptrace_handler_.Init();
+void AppMonitor::run(bool socket_loop, bool ptrace_loop) {
+    if (!socket_loop && !ptrace_loop) {
+        LOGD("no monitor handler active, exiting...");
+        return;
+    }
     event_loop_.Init();
-    event_loop_.RegisterHandler(socket_handler_, EPOLLIN | EPOLLET);
-    event_loop_.RegisterHandler(ptrace_handler_, EPOLLIN | EPOLLET);
+    // A handler that failed to initialise has no usable fd, so registering it would leave
+    // the monitor running blind: the control socket would accept nothing and `ctl` would
+    // appear to succeed while the monitor never hears it. Refuse to start instead.
+    if (socket_loop) {
+        if (!socket_handler_.Init()) {
+            LOGE("failed to initialise the control socket handler, exiting...");
+            return;
+        }
+        event_loop_.RegisterHandler(socket_handler_, EPOLLIN | EPOLLET);
+    }
+    if (ptrace_loop) {
+        if (!ptrace_handler_.Init()) {
+            LOGE("failed to initialise the ptrace handler, exiting...");
+            return;
+        }
+        event_loop_.RegisterHandler(ptrace_handler_, EPOLLIN | EPOLLET);
+    }
     event_loop_.Loop();
 }
 
@@ -170,6 +200,23 @@ void AppMonitor::request_exit() {
     event_loop_.Stop();
 }
 
+void AppMonitor::request_rearm() {
+    LOGI("rearm requested");
+
+    // A rearm asks for injection, so lift a stop the monitor put itself into after a
+    // crash loop or a daemon that died with the previous root session.
+    if (tracing_state_ != TRACING) {
+        request_start();
+    }
+
+    if (!zygote_.rearm()) {
+        request_stop("rearm failed");
+        return;
+    }
+
+    update_status();
+}
+
 void AppMonitor::notify_init_detached() {
     tracing_state_ = STOPPED;
     LOGI("stop tracing init");
@@ -194,6 +241,13 @@ bool AppMonitor::SocketHandler::Init() {
     };
     sprintf(addr.sun_path, "%s/%s", zygiskd::GetTmpPath().c_str(), AppMonitor::SOCKET_NAME);
     socklen_t socklen = sizeof(sa_family_t) + strlen(addr.sun_path);
+    // A filesystem socket outlives the process that bound it, and the work directory
+    // outlives a root session, so the name can still be held by a monitor that is gone.
+    // Only one monitor may own it, and a live owner is kept out by the caller, which
+    // starts a monitor only when none answers, so an unbound name here is ours to claim.
+    if (unlink(addr.sun_path) == -1 && errno != ENOENT) {
+        PLOGE("unlink stale control socket %s", addr.sun_path);
+    }
     if (bind(sock_fd_, (struct sockaddr *) &addr, socklen) == -1) {
         PLOGE("bind socket");
         return false;
@@ -212,8 +266,9 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
             continue;
         }
         ssize_t real_size;
-        if (msg_header.cmd >= Command::DAEMON_SET_INFO &&
-            msg_header.cmd != Command::SYSTEM_SERVER_STARTED) {
+        // Only these two carry a payload; every other command is the bare enum value.
+        if (msg_header.cmd == Command::DAEMON_SET_INFO ||
+            msg_header.cmd == Command::DAEMON_SET_ERROR_INFO) {
             if (static_cast<size_t>(nread) < sizeof(MsgHead)) {
                 LOGE("SocketHandler: received incomplete header for cmd %d, size %zd",
                      msg_header.cmd, nread);
@@ -251,6 +306,9 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
             break;
         case EXIT:
             monitor_.request_exit();
+            break;
+        case REARM:
+            monitor_.request_rearm();
             break;
         case ZYGOTE_INJECTED:
             monitor_.get_abi_manager().notify_injected();
@@ -587,14 +645,17 @@ bool AppMonitor::SigChldHandler::handleExecEvent(int pid, int &status) {
             // Fork and execute the external injector daemon.
             auto p = fork_dont_care();
             if (p == 0) {
-                execl(tracer, basename(tracer), "trace", std::to_string(pid).c_str(), "--restart",
+                execl(tracer, basename(tracer), "trace", std::to_string(pid).c_str(), "--spawn",
                       nullptr);
                 PLOGE("execute injector daemon");
-                kill(pid, SIGKILL);
+                // The target is parked in SIGSTOP waiting for an injector that will not
+                // arrive, so release it. Killing it feeds a zygote restart loop, which
+                // RescueParty answers by rebooting into the "wipe data" prompt.
+                kill(pid, SIGCONT);
                 _exit(1);
             } else if (p == -1) {
                 PLOGE("fork injector daemon");
-                kill(pid, SIGKILL);
+                kill(pid, SIGCONT);
             }
 
             handled = true;

@@ -5,6 +5,7 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/resource.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 #include <unwind.h>
 
@@ -176,6 +177,13 @@ DCL_HOOK_FUNC(static int, pthread_attr_setstacksize, void *target, size_t size) 
 
 #undef DCL_HOOK_FUNC
 
+void trigger_zygote_hooks() {
+    LOGI("triggering zygote hook sequence");
+    new_strdup(kZygoteInit);
+    char buf[PROP_VALUE_MAX];
+    new_property_get("ro.product.cpu.abi", buf, "0");
+}
+
 // -----------------------------------------------------------------
 static size_t get_fd_max() {
     rlimit r{32768, 32768};
@@ -209,6 +217,12 @@ ZygiskContext::~ZygiskContext() {
     }
 
     // Cleanup
+    //
+    // The late system_server path runs the module lifecycle without installing the zygote
+    // hooks, so there is no HookContext to tear down: no zygote hook to restore, and no
+    // unloader PLT hook to act on should_unmap.
+    if (g_hook == nullptr) return;
+
     g_hook->should_unmap = true;
     g_hook->restore_zygote_hook(env);
 }
