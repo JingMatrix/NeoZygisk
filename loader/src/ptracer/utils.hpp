@@ -78,7 +78,7 @@ void align_stack(struct user_regs_struct &regs, long preserve = 0);
 uintptr_t push_string(int pid, struct user_regs_struct &regs, const char *str);
 
 uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr,
-                      uintptr_t return_addr, std::vector<long> &args);
+                      uintptr_t return_addr, std::vector<long> &args, bool *ok = nullptr);
 
 int fork_dont_care();
 
@@ -115,3 +115,43 @@ inline const char *sigabbrev_np(int sig) {
 
 std::string get_program(int pid);
 void *find_module_return_addr(const std::vector<MapInfo> &info, std::string_view suffix);
+
+/// \brief Returns the module directory, resolved once from /proc/self/exe.
+///
+/// Every path the monitor and the tracer need is built from this rather than from the
+/// working directory, which a reinstall or hot install invalidates and which the late-load
+/// entry point -- a root shell -- never sets at all.
+const std::string &get_module_dir();
+
+/// \brief Reads /proc/<pid>/comm, without the trailing newline.
+///
+/// Note this is the thread name, not argv[0]. A zygote reports "main" here, because it
+/// rewrites its cmdline and never calls prctl(PR_SET_NAME) -- which is why `pidof zygote64`
+/// finds it but a comm comparison does not. system_server does set its name.
+/// \return The name, or an empty string if it could not be read.
+std::string get_comm(pid_t pid);
+
+/// \brief Reads the parent pid from /proc/<pid>/status.
+/// \return The parent pid, or -1 if it could not be read.
+pid_t get_ppid(pid_t pid);
+
+/// \brief Reads /proc/<pid>/cmdline as the argument vector it stores.
+///
+/// This is argv, not the thread name, so it does see the "zygote64" a zygote writes over
+/// its own argv[0] -- the name `pidof` matches and the one comm never carries.
+/// \return The arguments, or an empty vector if the file could not be read.
+std::vector<std::string> read_cmdline(pid_t pid);
+
+/// \brief Finds every live process whose /proc/<pid>/exe resolves to \p exe.
+///
+/// The executable is the same key the monitor's spawn path matches on, so using it here
+/// keeps the two paths in agreement -- notably it finds every zygote of this ABI, not just
+/// the one named "zygote64". Callers separate zygotes from system_server by comm, since
+/// system_server is a forked zygote and shares its executable.
+std::vector<pid_t> find_processes_by_exe(std::string_view exe);
+
+/// \brief Tests whether \p pid already has a library whose path contains \p suffix mapped.
+/// This is how the rearm path recognises an already-injected process: it reads the
+/// tracee's own mappings rather than trusting monitor-side state, which a previous
+/// monitor instance would not have shared.
+bool has_library_mapped(pid_t pid, std::string_view suffix);

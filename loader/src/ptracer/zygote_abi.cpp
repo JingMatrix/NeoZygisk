@@ -1,30 +1,80 @@
 #include "zygote_abi.hpp"
 
+#include <libgen.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <csignal>
+#include <cstring>
+#include <vector>
 
 #include "daemon.hpp"
 #include "logging.hpp"
 #include "monitor.hpp"
 #include "utils.hpp"
 
+namespace {
+
+/**
+ * @brief Tests whether a running app_process is a zygote and not some other program that
+ *        happens to run under the same interpreter.
+ *
+ * The executable and init parentage together are not enough. Anything launched from a
+ * boot script that backgrounds itself is reparented to init, and a root framework's
+ * daemon is typically app_process under a --nice-name of its own, which then looks exactly
+ * like a zygote and gets the zygote hooks installed into it.
+ *
+ * argv settles it, in either of the two shapes a zygote has: init launches it with
+ * --zygote on the command line, and it later overwrites argv[0] with "zygote64". comm is
+ * no help, staying "main" through both.
+ */
+bool is_zygote_cmdline(pid_t pid) {
+    auto argv = read_cmdline(pid);
+    if (argv.empty()) return false;
+
+    std::string_view name = argv.front();
+    if (auto slash = name.rfind('/'); slash != std::string_view::npos) {
+        name.remove_prefix(slash + 1);
+    }
+    if (name.starts_with("zygote")) return true;
+
+    for (const auto& arg : argv) {
+        if (arg == "--zygote") return true;
+    }
+    return false;
+}
+
+// The daemon frames its status strings with a length that counts the terminator, so the
+// payload carries a trailing NUL. Strip it here, where both senders converge, to keep the
+// status file plain text.
+std::string_view without_trailing_nuls(std::string_view text) {
+    while (!text.empty() && text.back() == '\0') text.remove_suffix(1);
+    return text;
+}
+
+}  // namespace
+
 ZygoteAbiManager::ZygoteAbiManager(AppMonitor& monitor, bool is_64bit)
     : abi_name_(is_64bit ? "64" : "32"),
       program_path_(is_64bit ? "/system/bin/app_process64" : "/system/bin/app_process32"),
-      tracer_path_(is_64bit ? "./bin/zygisk-ptrace64" : "./bin/zygisk-ptrace32"),
-      monitor_(monitor) {}
+      monitor_(monitor) {
+    const auto& module_dir = get_module_dir();
+    tracer_path_ = module_dir + (is_64bit ? "/bin/zygisk-ptrace64" : "/bin/zygisk-ptrace32");
+    daemon_path_ = module_dir + (is_64bit ? "/bin/zygiskd64" : "/bin/zygiskd32");
+}
 
 const Status& ZygoteAbiManager::get_status() const { return status_; }
 
 void ZygoteAbiManager::notify_injected() { status_.zygote_injected = true; }
 
-void ZygoteAbiManager::set_daemon_info(std::string_view info) { status_.daemon_info = info; }
+void ZygoteAbiManager::set_daemon_info(std::string_view info) {
+    status_.daemon_info = without_trailing_nuls(info);
+}
 
 void ZygoteAbiManager::set_daemon_crashed(std::string_view error) {
     status_.daemon_running = false;
-    status_.daemon_error_info = error;
+    status_.daemon_error_info = without_trailing_nuls(error);
 }
 
 bool ZygoteAbiManager::is_in_crash_loop() {
@@ -39,7 +89,8 @@ bool ZygoteAbiManager::is_in_crash_loop() {
     return counter.count >= ZygoteAbiManager::CRASH_LOOP_RETRY_COUNT;
 }
 
-bool ZygoteAbiManager::ensure_daemon_created() {
+bool ZygoteAbiManager::ensure_daemon_created(bool* started) {
+    if (started) *started = false;
     status_.zygote_injected = false;
     if (status_.daemon_pid == -1) {
         auto pid = fork();
@@ -48,21 +99,26 @@ bool ZygoteAbiManager::ensure_daemon_created() {
             return false;
         }
         if (pid == 0) {
-            std::string daemon_name = "./bin/zygiskd";
-            daemon_name += abi_name_;
-            execl(
-                daemon_name.c_str(),
-                daemon_name.c_str(),
-                "--workdir",
-                zygiskd::GetTmpPath().c_str(),
-                nullptr
-            );
-            PLOGE("exec daemon %s", daemon_name.c_str());
+            // Bind the daemon's lifetime to this monitor. Once its monitor is gone a
+            // daemon is unreachable -- a replacement cannot adopt it, and the next one
+            // unlinks and rebinds the socket name from under it -- so it would hold a
+            // retired session's module memfds and companion sockets indefinitely.
+            //
+            // The signal survives execve, being cleared only for a set-user-ID binary.
+            // Re-checking the parent closes the race where the monitor exits inside this
+            // window, before the signal was armed.
+            prctl(PR_SET_PDEATHSIG, SIGKILL);
+            if (getppid() == 1) _exit(1);
+
+            execl(daemon_path_.c_str(), daemon_path_.c_str(), "--workdir",
+                  zygiskd::GetTmpPath().c_str(), nullptr);
+            PLOGE("exec daemon %s", daemon_path_.c_str());
             exit(1);
         }
         status_.supported = true;
         status_.daemon_pid = pid;
         status_.daemon_running = true;
+        if (started) *started = true;
     }
     return status_.daemon_running;
 }
@@ -76,7 +132,7 @@ const char* ZygoteAbiManager::check_and_prepare_injection() {
         monitor_.request_stop("daemon not running");
         return nullptr;
     }
-    return tracer_path_;
+    return tracer_path_.c_str();
 }
 
 bool ZygoteAbiManager::handle_daemon_exit_if_match(int pid, int process_status) {
@@ -84,6 +140,10 @@ bool ZygoteAbiManager::handle_daemon_exit_if_match(int pid, int process_status) 
         auto status_str = parse_status(process_status);
         LOGW("ZygoteAbiManager: daemon%s (pid %d) exited: %s", abi_name_, pid, status_str.c_str());
         status_.daemon_running = false;
+        // Clear the pid so ensure_daemon_created() can start a replacement. Losing the
+        // daemon is routine under a temp root: `ksud unload` SIGKILLs every holder of a
+        // [ksu_driver] fd, and zygiskd holds one for its whole life.
+        status_.daemon_pid = -1;
         if (status_.daemon_error_info.empty()) {
             status_.daemon_error_info = status_str;
         }
@@ -91,4 +151,107 @@ bool ZygoteAbiManager::handle_daemon_exit_if_match(int pid, int process_status) 
         return true;
     }
     return false;
+}
+
+void ZygoteAbiManager::attach_running(pid_t pid, const char* mode_flag, const char* what) {
+    LOGI("rearm: attaching to running %s (pid %d)", what, pid);
+    auto child = fork_dont_care();
+    if (child == 0) {
+        execl(tracer_path_.c_str(), basename(tracer_path_.c_str()), "trace",
+              std::to_string(pid).c_str(), mode_flag, nullptr);
+        PLOGE("exec injector for %s", what);
+        // Never signal the target from this path: it is live and carrying the running
+        // system, so losing injection for it is recoverable where killing it is not.
+        _exit(1);
+    } else if (child == -1) {
+        PLOGE("fork injector for %s", what);
+    }
+}
+
+bool ZygoteAbiManager::rearm() {
+    bool daemon_started = false;
+    if (!ensure_daemon_created(&daemon_started)) {
+        LOGE("rearm: daemon%s is not running", abi_name_);
+        return false;
+    }
+
+    // A daemon that outlived a module refresh still holds the previous snapshot, so have it
+    // rescan before anything is injected against it. One just forked above needs none: it
+    // loads the current set at startup. Asking it anyway would also cost the whole monitor,
+    // since this runs on its only thread and RefreshModules waits inside Connect()'s
+    // one-second retries until the daemon has bound its socket -- and while that thread is
+    // blocked, every process init forks sits in a ptrace stop nobody is reaping.
+    if (!daemon_started && !zygiskd::RefreshModules()) {
+        LOGW("rearm: daemon%s could not refresh its module snapshot", abi_name_);
+    }
+
+    // Match on the executable, as the spawn path does, then narrow: every app process is a
+    // forked zygote that never execs, so the whole running system reports this same
+    // executable. A zygote is one that init started and that argv identifies as a zygote --
+    // parentage alone also admits an unrelated daemon that backgrounded itself out of a
+    // boot script, and injecting one of those installs the zygote hooks into a process that
+    // never forks an app. system_server is the only forked child that is a target in its
+    // own right, and the only one that renames itself; an app or an app zygote like
+    // webview_zygote inherits the hooks of the zygote it came from.
+    //
+    // comm cannot identify the zygote: it rewrites its cmdline, which is what pidof
+    // matches, but never calls prctl(PR_SET_NAME), so it still reports "main".
+    pid_t system_server_pid = -1;
+    std::vector<pid_t> zygote_pids;
+    for (auto pid : find_processes_by_exe(program_path_)) {
+        if (get_ppid(pid) == 1) {
+            if (is_zygote_cmdline(pid)) {
+                zygote_pids.push_back(pid);
+            } else {
+                LOGI("rearm: %s (pid %d) is not a zygote, skipping", program_path_.c_str(), pid);
+            }
+        } else if (get_comm(pid) == "system_server") {
+            system_server_pid = pid;
+        }
+    }
+
+    if (zygote_pids.empty()) {
+        // A normal boot reaches this on every post-mount, long before zygote exists. The
+        // monitor is already seized on init and will catch it the usual way.
+        LOGI("rearm: no running zygote for %s, nothing to attach", program_path_.c_str());
+        return true;
+    }
+
+    status_.supported = true;
+
+    // libzygisk.so stays mapped in a zygote for its whole life -- the self-unmap only
+    // happens in a specialized child -- so its presence is a reliable injected marker here
+    // and makes a repeated rearm a no-op.
+    bool any_zygote_was_bare = false;
+    for (auto pid : zygote_pids) {
+        if (has_library_mapped(pid, "libzygisk.so")) {
+            LOGI("rearm: zygote (pid %d) is already injected, skipping", pid);
+            status_.zygote_injected = true;
+        } else {
+            any_zygote_was_bare = true;
+            attach_running(pid, "--standalone", "zygote");
+        }
+    }
+
+    // system_server is only reachable this way: it is forked without an exec, so the
+    // monitor never sees it, and a normal boot instead specializes it inside an
+    // already-hooked zygote.
+    //
+    // Gate it on having found a zygote without our hooks. An injected zygote means the
+    // system either booted normally or was already rearmed, and in both cases
+    // system_server has run server_specialize once already -- firing it a second time
+    // would re-enter every module's lifecycle. The library is not a usable marker for
+    // this: a normally specialized system_server unmaps it on the way out, so its absence
+    // cannot distinguish "never injected" from "injected and cleaned up".
+    if (system_server_pid == -1) {
+        LOGI("rearm: no running system_server");
+    } else if (!any_zygote_was_bare) {
+        LOGI("rearm: zygote was already injected, leaving system_server (pid %d) alone",
+             system_server_pid);
+    } else {
+        attach_running(system_server_pid, "--system_server", "system_server");
+    }
+
+    monitor_.update_status();
+    return true;
 }

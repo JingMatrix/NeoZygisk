@@ -1,6 +1,18 @@
+# No semicolon may appear anywhere in this file, comments included: ksud splits it on both
+# newlines and semicolons, and the tail of a split comment no longer starts with a hash,
+# so it is parsed as a rule and aborts the install.
+
 type zygisk_file file_type
 typeattribute zygisk_file mlstrustedobject
 allow zygote zygisk_file sock_file {read write}
+
+# Late load injects a system_server that is already running, and the injected library
+# pings the daemon before any mode-specific work, returning when that fails. It connects
+# as u:r:system_server:s0, so it needs the socket file and the listening socket. The
+# daemon creates that socket with the context u:r:zygote:s0, which is why connectto names
+# zygote rather than the daemon's own domain.
+allow system_server zygisk_file sock_file {read write}
+allow system_server zygote unix_stream_socket connectto
 
 allow zygote magisk lnk_file read
 allow zygote unlabeled file {read open}
@@ -17,3 +29,19 @@ allow zygote magisk memfd_file {getattr read write map execute}
 allow zygote su memfd_file {getattr read write map execute}
 allow zygote proc file *
 allow zygote nsfs file *
+
+# A module library reaches a specializing process as a memfd passed over the control
+# socket, and the receiver needs read and write on it to accept the descriptor at all plus
+# execute to dlopen it. The label depends on the platform: an anonymous memfd is
+# u:object_r:tmpfs:s0 on older kernels and gets a memfd_file type named after the creating
+# domain on newer ones, so both forms are granted. The spawn path only ever needs this for
+# zygote, which specializes system_server itself. A late-injected system_server loads the
+# same libraries in its own context, and without these the kernel drops the descriptors
+# from the control message and server_specialize runs with no modules at all.
+allow system_server tmpfs file {getattr read write map execute}
+allow system_server magisk memfd_file {getattr read write map execute}
+allow system_server su memfd_file {getattr read write map execute}
+
+# The JIT cache the injected library creates for itself is labelled after its creator, so
+# in system_server it is system_server_tmpfs rather than the tmpfs above.
+allow system_server system_server_tmpfs file {getattr read write map execute}

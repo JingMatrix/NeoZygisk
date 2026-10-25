@@ -2,13 +2,15 @@
 
 #include "daemon.hpp"
 #include "logging.hpp"
+#include "system_server.hpp"
+#include "trace.hpp"
 #include "zygisk.hpp"
 
 using namespace std;
 
 extern "C" [[gnu::visibility("default")]]
-void entry(void* addr, size_t size, const char* path) {
-    LOGI("zygisk library injected, version %s", ZKSU_VERSION);
+void entry(void* addr, size_t size, const char* path, TraceMode mode) {
+    LOGI("zygisk library injected, version %s [mode: %d]", ZKSU_VERSION, mode);
 
     zygiskd::Init(path);
 
@@ -17,8 +19,24 @@ void entry(void* addr, size_t size, const char* path) {
         return;
     }
 
-    hook_entry(addr, size);
-    send_seccomp_event_if_needed();
+    switch (mode) {
+    case TraceMode::SYSTEM_SERVER:
+        // No zygote hooks here: system_server never forks an app, and it is already
+        // specialized, so the lifecycle is driven directly instead.
+        trigger_system_server_hooks();
+        break;
+    case TraceMode::STANDALONE:
+        hook_entry(addr, size);
+        send_seccomp_event_if_needed();
+        // A zygote caught at its entry point runs these itself on the way up. One that
+        // was already running is past that point, so drive them here.
+        trigger_zygote_hooks();
+        break;
+    default:
+        hook_entry(addr, size);
+        send_seccomp_event_if_needed();
+        break;
+    }
 }
 
 /**

@@ -30,8 +30,12 @@ pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Trace;
 #[cfg(not(debug_assertions))]
 pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Info;
 
-/// The relative path to the directory where Zygisk modules are stored.
-pub const PATH_MODULES_DIR: &str = "..";
+/// The directory where Zygisk modules are stored. The same path under APatch, KernelSU
+/// and Magisk, and already assumed absolute elsewhere (see `clean_mount_namespace`).
+///
+/// Named absolutely rather than resolved against the working directory, which a reinstall
+/// or hot install invalidates by renaming the live module directory away.
+pub const PATH_MODULES_DIR: &str = "/data/adb/modules";
 
 // --- IPC Constants ---
 // These are magic numbers used in communication with the controller.
@@ -58,6 +62,9 @@ pub enum DaemonSocketAction {
     GetModuleDir,
     ZygoteRestart,
     SystemServerStarted,
+    /// Rebuild the module snapshot from disk and acknowledge with 1 (ok) or 0 (kept the
+    /// previous snapshot). Must stay last to match `SocketAction` in `daemon.hpp`.
+    RefreshModules,
 }
 
 bitflags! {

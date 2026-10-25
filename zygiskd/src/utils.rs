@@ -79,12 +79,6 @@ pub fn get_current_attr() -> Result<String> {
     Ok(s.trim().to_string())
 }
 
-/// Changes the SELinux context of a file using the `chcon` command.
-pub fn chcon(path: &str, context: &str) -> Result<()> {
-    Command::new("chcon").arg(context).arg(path).status()?;
-    Ok(())
-}
-
 /// Retrieves an Android system property value.
 pub fn get_property(name: &str) -> Result<String> {
     let name = CString::new(name)?;
@@ -166,7 +160,16 @@ pub fn unix_listener_from_path(path: &str) -> Result<UnixListener> {
     let socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
     bind(&socket, &addr)?;
     listen(&socket, 10)?; // Backlog of 10
-    chcon(path, "u:object_r:zygisk_file:s0")?;
+    // Label the socket so the zygote domain may connect on enforcing-SELinux devices.
+    Command::new("chcon")
+        .arg("u:object_r:zygisk_file:s0")
+        .arg(path)
+        .status()?;
+    // Open by DAC, so a late-injected system_server can reach the socket as uid 1000.
+    // This is not the gate: access is controlled by the `zygisk_file` label above on an
+    // enforcing device, and in every case by the SO_PEERCRED check in `handle_connection`,
+    // which admits only root and system.
+    Command::new("chmod").arg("777").arg(path).status()?;
     Ok(UnixListener::from(socket))
 }
 

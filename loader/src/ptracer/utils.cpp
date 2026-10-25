@@ -1,8 +1,11 @@
 #include "utils.hpp"
 
+#include <dirent.h>
 #include <dlfcn.h>
 #include <elf.h>
 #include <fcntl.h>
+#include <libgen.h>
+#include <limits.h>
 #include <link.h>
 #include <sched.h>
 #include <sys/auxv.h>
@@ -20,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ios>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -296,10 +300,13 @@ uintptr_t push_string(int pid, struct user_regs_struct &regs, const char *str) {
  * 6.  Waiting for the process to trap (usually via SIGSEGV at our fake return address).
  * 7.  Reading the function's return value from the appropriate register.
  *
- * @return The return value of the remote function, or 0 on failure.
+ * @return The return value of the remote function, or 0 on failure. A function returning
+ * zero is indistinguishable from a failure by value alone, so a caller that needs to tell
+ * them apart passes `ok`.
  */
 uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr,
-                      uintptr_t return_addr, std::vector<long> &args) {
+                      uintptr_t return_addr, std::vector<long> &args, bool *ok) {
+    if (ok) *ok = false;
     align_stack(regs);
     LOGV("calling remote function 0x%" PRIxPTR " with %zu args, return to 0x%" PRIxPTR, func_addr,
          args.size(), return_addr);
@@ -416,6 +423,7 @@ uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_add
     // We expect the tracee to stop at our fake return address.
     if (WIFSTOPPED(status) && static_cast<uintptr_t>(regs.REG_IP) == return_addr) {
         LOGV("remote call returned, result: 0x%" PRIXPTR, (uintptr_t) regs.REG_RET);
+        if (ok) *ok = true;
         return regs.REG_RET;
     } else {
         LOGE("process stopped unexpectedly after remote call: %s at ip=0x%" PRIXPTR
@@ -600,4 +608,137 @@ std::string get_program(int pid) {
     }
     buf[sz] = 0;
     return buf;
+}
+
+/**
+ * @brief Returns the module directory, resolved once from /proc/self/exe
+ *        ($MODDIR/bin/zygisk-ptrace64 -> $MODDIR).
+ *
+ * Nothing the monitor needs may be named relative to the working directory. A hot install
+ * renames the live module directory into ksud's trash, so a monitor that inherited it keeps
+ * resolving to the retired copy until the next boot deletes it; the late-load entry point is
+ * a root shell, whose working directory is wherever the user happened to be. Pinned on first
+ * use so the answer stays the path the running binary was started from.
+ */
+const std::string &get_module_dir() {
+    static const std::string dir = [] {
+        char exe_path[PATH_MAX];
+        auto len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len == -1) {
+            PLOGE("readlink /proc/self/exe");
+            return std::string(".");
+        }
+        exe_path[len] = '\0';
+        // .../bin/zygisk-ptrace64 -> .../bin -> $MODDIR. Nesting is safe: bionic's dirname()
+        // returns a buffer it owns and accepts one back as input.
+        return std::string(dirname(dirname(exe_path)));
+    }();
+    return dir;
+}
+
+/**
+ * @brief Reads /proc/[pid]/comm, without the trailing newline.
+ */
+std::string get_comm(pid_t pid) {
+    std::string path = "/proc/" + std::to_string(pid) + "/comm";
+    auto file = std::unique_ptr<FILE, decltype(&fclose)>(fopen(path.c_str(), "re"), &fclose);
+    if (file == nullptr) return "";
+
+    char buf[64];
+    if (fgets(buf, sizeof(buf), file.get()) == nullptr) return "";
+
+    std::string comm(buf);
+    while (!comm.empty() && (comm.back() == '\n' || comm.back() == '\0')) {
+        comm.pop_back();
+    }
+    return comm;
+}
+
+/**
+ * @brief Reads /proc/[pid]/cmdline as the argument vector it stores.
+ */
+std::vector<std::string> read_cmdline(pid_t pid) {
+    std::vector<std::string> argv;
+    std::string path = "/proc/" + std::to_string(pid) + "/cmdline";
+    auto file = std::unique_ptr<FILE, decltype(&fclose)>(fopen(path.c_str(), "re"), &fclose);
+    if (file == nullptr) return argv;
+
+    // The arguments are NUL-separated. A process that rewrote argv[0] with a shorter name
+    // leaves the rest of the original block zeroed, so empty entries are dropped rather
+    // than reported as arguments.
+    std::string arg;
+    int ch;
+    while ((ch = fgetc(file.get())) != EOF) {
+        if (ch == '\0') {
+            if (!arg.empty()) argv.push_back(arg);
+            arg.clear();
+        } else {
+            arg.push_back(static_cast<char>(ch));
+        }
+    }
+    if (!arg.empty()) argv.push_back(arg);
+    return argv;
+}
+
+/**
+ * @brief Reads the parent pid from /proc/[pid]/status.
+ *
+ * Parsed from status rather than stat, whose second field is a parenthesised comm that may
+ * itself contain spaces and parentheses and so cannot be field-split safely.
+ */
+pid_t get_ppid(pid_t pid) {
+    std::string path = "/proc/" + std::to_string(pid) + "/status";
+    auto file = std::unique_ptr<FILE, decltype(&fclose)>(fopen(path.c_str(), "re"), &fclose);
+    if (file == nullptr) return -1;
+
+    char line[256];
+    while (fgets(line, sizeof(line), file.get()) != nullptr) {
+        int ppid = -1;
+        if (sscanf(line, "PPid: %d", &ppid) == 1) return ppid;
+    }
+    return -1;
+}
+
+/**
+ * @brief Finds every live process whose /proc/[pid]/exe resolves to the given path.
+ */
+std::vector<pid_t> find_processes_by_exe(std::string_view exe) {
+    std::vector<pid_t> found;
+
+    auto dir = std::unique_ptr<DIR, decltype(&closedir)>(opendir("/proc"), &closedir);
+    if (dir == nullptr) {
+        PLOGE("opendir /proc");
+        return found;
+    }
+
+    while (auto *entry = readdir(dir.get())) {
+        char *end_ptr = nullptr;
+        errno = 0;
+        long value = strtol(entry->d_name, &end_ptr, 10);
+        if (*end_ptr != '\0' || errno != 0 || value <= 0) continue;
+        auto pid = static_cast<pid_t>(value);
+
+        // Read the link directly instead of going through get_program(), which logs on
+        // every failure. Most /proc entries here are processes we cannot or need not
+        // inspect, so a failure is the normal case and not worth reporting.
+        std::string path = "/proc/" + std::string(entry->d_name) + "/exe";
+        char buf[PATH_MAX];
+        auto len = readlink(path.c_str(), buf, sizeof(buf) - 1);
+        if (len == -1) continue;
+        buf[len] = '\0';
+
+        if (exe == buf) found.push_back(pid);
+    }
+
+    return found;
+}
+
+/**
+ * @brief Tests whether a library whose path contains the given suffix is mapped into a process.
+ */
+bool has_library_mapped(pid_t pid, std::string_view suffix) {
+    for (const auto &info : MapInfo::Scan(std::to_string(pid))) {
+        if (info.path.find(suffix) != std::string::npos) return true;
+    }
+    return false;
 }
