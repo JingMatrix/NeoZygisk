@@ -150,6 +150,26 @@ std::vector<std::string> read_cmdline(pid_t pid);
 /// system_server is a forked zygote and shares its executable.
 std::vector<pid_t> find_processes_by_exe(std::string_view exe);
 
+/// \brief Reads the pid tracing \p pid from /proc/<pid>/status.
+///
+/// Only one process may trace init, which is what makes this the answer to "is a monitor
+/// still attached": its control socket closes before the process dies, so a replacement has
+/// to wait out the ptrace attachment rather than the socket.
+/// \return The tracer's pid, 0 when untraced, or -1 if it could not be read.
+pid_t get_tracer_pid(pid_t pid);
+
+/// \brief Tests whether argv says \p pid is a zygote, in either of the two shapes it has.
+///
+/// The executable and init parentage together are not enough: anything a boot script
+/// backgrounds is reparented to init, and a root framework's daemon is typically
+/// app_process under a --nice-name of its own. argv settles it, since init launches a
+/// zygote with --zygote and it later overwrites argv[0] with "zygote64". comm is no help,
+/// staying "main" through both.
+bool has_zygote_cmdline(pid_t pid);
+
+/// \brief Finds every running zygote of this build's own ABI, the only one it can inject.
+std::vector<pid_t> find_zygotes();
+
 /// \brief Tests whether \p pid already has a library whose path contains \p suffix mapped.
 /// This is how the rearm path recognises an already-injected process: it reads the
 /// tracee's own mappings rather than trusting monitor-side state, which a previous

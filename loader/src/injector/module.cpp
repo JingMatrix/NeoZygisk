@@ -386,7 +386,7 @@ void ZygiskContext::app_specialize_post() {
     run_modules_post();
 
     if ((info_flags & PROCESS_IS_MANAGER) == PROCESS_IS_MANAGER) {
-        LOGI("current uid %d is manager!", args.app->uid);
+        LOGI("uid %d is the root manager, exporting ZYGISK_ENABLED for it", args.app->uid);
         setenv("ZYGISK_ENABLED", "1", 1);
     }
 

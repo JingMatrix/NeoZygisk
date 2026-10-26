@@ -1,5 +1,8 @@
 #pragma once
 
+#include <sys/socket.h>
+#include <sys/un.h>
+
 #include <set>
 #include <string>
 #include <vector>
@@ -117,7 +120,10 @@ public:
     void request_start();
     void request_stop(std::string reason);
     void request_exit();
-    void request_rearm();
+
+    /// Refreshes the module snapshot and attaches to whatever is up and not yet hooked.
+    /// The result is what the caller over the control socket is answered with.
+    RearmResult request_rearm();
     void notify_init_detached();
 
     // Public Accessors for owned components
@@ -139,6 +145,11 @@ private:
             int length;
             char data[0];
         };
+
+        /// Sends a rearm verdict back to the sender of the command, when it bound an
+        /// address to receive one on.
+        void answer(const struct sockaddr_un &peer, socklen_t peerlen, RearmResult result);
+
         AppMonitor &monitor_;
         std::vector<uint8_t> buf_;
         int sock_fd_ = -1;

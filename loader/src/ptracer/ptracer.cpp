@@ -28,7 +28,7 @@
  * @brief Shared logic to remotely load and initialize the injector library.
  */
 static bool execute_remote_injection(int pid, struct user_regs_struct &regs, const char *lib_path,
-                                     TraceMode mode) {
+                                     TraceMode mode, bool *hooked) {
 #if defined(__aarch64__)
     // Clear the BTYPE field (bits 10 and 11) in PSTATE.
     // Whatever indirect branch the tracee last took may have left BTYPE at 0b11.
@@ -161,16 +161,24 @@ static bool execute_remote_injection(int pid, struct user_regs_struct &regs, con
     auto remote_tmp_path = push_string(pid, regs, zygiskd::GetTmpPath().c_str());
     args.push_back((long) remote_tmp_path);
     args.push_back(mode);
-    // entry() returns void, so only `ok` tells a clean return from a crash inside it. A
-    // crash there has already damaged the target -- it ran our code on its own stack -- but
-    // reporting success would hide that behind an injected process that misbehaves later.
+    // `ok` tells a clean return from a crash inside entry(). A crash there has already
+    // damaged the target -- it ran our code on its own stack -- but reporting success would
+    // hide that behind an injected process that misbehaves later.
     bool entry_returned = false;
-    remote_call(pid, regs, injector_entry, (uintptr_t) libc_return_addr, args, &entry_returned);
+    auto reported =
+        remote_call(pid, regs, injector_entry, (uintptr_t) libc_return_addr, args, &entry_returned);
     if (!entry_returned) {
         LOGE("the injector's entry function did not return cleanly in process %d", pid);
         return false;
     }
 
+    // What entry() returned: whether it installed hooks, or only mapped itself because the
+    // daemon never answered its heartbeat. Only the low word is the int it wrote; the rest
+    // of the return register is whatever the ABI left there.
+    if (hooked != nullptr) {
+        *hooked = static_cast<uint32_t>(reported) != 0;
+        if (!*hooked) LOGW("pid %d has our library mapped but no hooks", pid);
+    }
     return true;
 }
 
@@ -203,14 +211,14 @@ static bool execute_remote_injection(int pid, struct user_regs_struct &regs, con
  * @param lib_path The absolute path to the shared library to be injected.
  * @return True on successful injection, false otherwise.
  */
-bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
-    LOGI("starting early library injection for PID: %d, library: %s", pid, lib_path);
+bool inject_before_start(int pid, const char *lib_path, TraceMode mode, bool *hooked) {
+    LOGI("starting early library injection for pid %d, library %s", pid, lib_path);
 
     // Backup of the target's registers, to be restored before detaching.
     struct user_regs_struct regs{}, backup{};
     auto map = MapInfo::Scan(std::to_string(pid));
     if (!get_regs(pid, regs)) {
-        LOGE("failed to get registers for PID %d, injection aborted", pid);
+        LOGE("failed to get registers for pid %d, injection aborted", pid);
         return false;
     }
 
@@ -264,7 +272,7 @@ bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
     }
 
     if (entry_addr == 0) {
-        LOGE("failed to find AT_ENTRY in auxiliary vector for PID %d, cannot determine entry point",
+        LOGE("failed to find AT_ENTRY in auxiliary vector for pid %d, cannot determine entry point",
              pid);
         return false;
     }
@@ -277,7 +285,7 @@ bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
     // For arm32 compatibility, we set the last bit to the same as the entry address.
     uintptr_t break_addr = (-0x05ec1cff & ~1) | (entry_addr & 1);  // An arbitrary invalid address.
     if (!write_proc(pid, addr_of_entry_addr, &break_addr, sizeof(break_addr))) {
-        LOGE("failed to write hijack address to PID %d, injection aborted", pid);
+        LOGE("failed to write hijack address to pid %d, injection aborted", pid);
         return false;
     }
 
@@ -310,7 +318,7 @@ bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
                 continue;
             } else {
                 // ERROR: Unexpected signal (e.g., SIGILL, SIGBUS). Abort.
-                LOGE("process stopped for unexpected signal: %d", sig);
+                LOGE("process stopped for unexpected signal %s (%d)", sigabbrev_np(sig), sig);
                 return false;
             }
         }
@@ -318,7 +326,7 @@ bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
 
     // Verify we are truly at the trap
     if (!get_regs(pid, regs)) {
-        LOGE("failed to get registers after SIGSEGV for PID %d", pid);
+        LOGE("failed to get registers after SIGSEGV for pid %d", pid);
         return false;
     }
     // Sanity check: ensure we stopped at our invalid address.
@@ -342,7 +350,7 @@ bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
     // the original executable can securely validate its own BTI pad upon final resume.
     memcpy(&backup, &regs, sizeof(regs));
 
-    if (!execute_remote_injection(pid, regs, lib_path, mode)) {
+    if (!execute_remote_injection(pid, regs, lib_path, mode, hooked)) {
         return false;
     }
 
@@ -351,19 +359,19 @@ bool inject_before_start(int pid, const char *lib_path, TraceMode mode) {
     backup.REG_IP = (long) entry_addr;
     LOGI("injection complete, restoring registers before resuming normal execution");
     if (!set_regs(pid, backup)) {
-        LOGE("failed to restore original registers for PID %d", pid);
+        LOGE("failed to restore original registers for pid %d", pid);
         return false;
     }
 
     return true;
 }
 
-bool inject_after_start(int pid, const char *lib_path, TraceMode mode) {
-    LOGI("starting late library injection for PID: %d, library: %s", pid, lib_path);
+bool inject_after_start(int pid, const char *lib_path, TraceMode mode, bool *hooked) {
+    LOGI("starting late library injection for pid %d, library %s", pid, lib_path);
 
     struct user_regs_struct regs{}, backup{};
     if (!get_regs(pid, regs)) {
-        LOGE("failed to get registers for PID %d, injection aborted", pid);
+        LOGE("failed to get registers for pid %d, injection aborted", pid);
         return false;
     }
 
@@ -389,7 +397,7 @@ bool inject_after_start(int pid, const char *lib_path, TraceMode mode) {
 #endif
 
     // Execute the shared remote injection logic
-    bool success = execute_remote_injection(pid, regs, lib_path, mode);
+    bool success = execute_remote_injection(pid, regs, lib_path, mode, hooked);
 
     // Restore State directly, whether or not the injection worked: the target is running
     // with the registers we hijacked, and resuming it with those would send it to our fake
@@ -397,7 +405,7 @@ bool inject_after_start(int pid, const char *lib_path, TraceMode mode) {
     // The instruction pointer (REG_IP) is already correct in the backup.
     LOGI("restoring registers before resuming normal execution");
     if (!set_regs(pid, backup)) {
-        LOGE("failed to restore original registers for PID %d", pid);
+        LOGE("failed to restore original registers for pid %d", pid);
         return false;
     }
 
@@ -412,7 +420,7 @@ bool inject_after_start(int pid, const char *lib_path, TraceMode mode) {
 // Returns false if wait failed or process died unexpectedly.
 static bool wait_for_process(int pid, int *status) {
     if (waitpid(pid, status, __WALL) < 0) {
-        PLOGE("waitpid on PID %d", pid);
+        PLOGE("waitpid on pid %d", pid);
         return false;
     }
     return true;
@@ -479,15 +487,15 @@ static bool wait_for_process(int pid, int *status) {
  *
  * Shared logic between Seize and Attach methods.
  */
-static bool perform_injection(int pid, TraceMode mode) {
+static bool perform_injection(int pid, TraceMode mode, bool *hooked) {
     std::string lib_path = zygiskd::GetTmpPath();
     lib_path += "/lib" LP_SELECT("", "64") "/libzygisk.so";
     bool process_started = mode == TraceMode::STANDALONE || mode == TraceMode::SYSTEM_SERVER;
 
     if (process_started) {
-        return inject_after_start(pid, lib_path.c_str(), mode);
+        return inject_after_start(pid, lib_path.c_str(), mode, hooked);
     }
-    return inject_before_start(pid, lib_path.c_str(), mode);
+    return inject_before_start(pid, lib_path.c_str(), mode, hooked);
 }
 
 /**
@@ -502,7 +510,7 @@ static bool detach_with_gki_workaround(int pid, int detach_signal) {
 
     // 1. Advance to next syscall entry/exit to clear signal-stop state
     if (ptrace(PTRACE_SYSCALL, pid, 0, 0) == -1) {
-        PLOGE("ptrace(PTRACE_SYSCALL) on PID %d", pid);
+        PLOGE("ptrace(PTRACE_SYSCALL) on pid %d", pid);
         ptrace(PTRACE_DETACH, pid, 0, detach_signal);  // Try to detach anyway
         return false;
     }
@@ -516,7 +524,7 @@ static bool detach_with_gki_workaround(int pid, int detach_signal) {
 
     // 3. Clean detach
     if (ptrace(PTRACE_DETACH, pid, 0, detach_signal) == -1) {
-        PLOGE("ptrace(PTRACE_DETACH) on PID %d", pid);
+        PLOGE("ptrace(PTRACE_DETACH) on pid %d", pid);
         return false;
     }
     return true;
@@ -524,8 +532,8 @@ static bool detach_with_gki_workaround(int pid, int detach_signal) {
 
 // --- Strategy 1: PTRACE_SEIZE (Preferred) ---
 
-static bool trace_with_seize(int pid, TraceMode mode) {
-    LOGI("attempting trace_seize on PID %d", pid);
+static bool trace_with_seize(int pid, TraceMode mode, bool *hooked) {
+    LOGV("trying PTRACE_SEIZE on pid %d", pid);
 
     bool process_started = mode == TraceMode::STANDALONE || mode == TraceMode::SYSTEM_SERVER;
 
@@ -540,7 +548,7 @@ static bool trace_with_seize(int pid, TraceMode mode) {
         // PTRACE_SEIZE does NOT stop the process. We must explicitly interrupt it.
         LOGV("late mode: sending PTRACE_INTERRUPT to pause the running process");
         if (ptrace(PTRACE_INTERRUPT, pid, 0, 0) == -1) {
-            PLOGE("ptrace(PTRACE_INTERRUPT) on PID %d", pid);
+            PLOGE("ptrace(PTRACE_INTERRUPT) on pid %d", pid);
             ptrace(PTRACE_DETACH, pid, 0, 0);
             return false;
         }
@@ -563,7 +571,7 @@ static bool trace_with_seize(int pid, TraceMode mode) {
 
     if (valid_stop) {
         // 1. Inject Payload
-        if (!perform_injection(pid, mode)) {
+        if (!perform_injection(pid, mode, hooked)) {
             BAIL_AND_DETACH
         }
 
@@ -574,11 +582,11 @@ static bool trace_with_seize(int pid, TraceMode mode) {
             // exiting: the kernel would release the tracee either way, but only at a point
             // we no longer control, and a tracer that goes on to do anything else would
             // hold a live zygote or system_server stopped while it did.
-            LOGV("late injection complete, detaching from PID %d", pid);
+            LOGV("late injection complete, detaching from pid %d", pid);
             if (ptrace(PTRACE_DETACH, pid, 0, 0) == -1) {
                 // The injection itself succeeded, and the tracee is released anyway once
                 // this process exits, so this is worth reporting but not failing over.
-                PLOGE("ptrace(PTRACE_DETACH) on PID %d", pid);
+                PLOGE("ptrace(PTRACE_DETACH) on pid %d", pid);
             }
             return true;
         } else {
@@ -586,7 +594,7 @@ static bool trace_with_seize(int pid, TraceMode mode) {
 
             // 2. Send SIGCONT to the process
             if (kill(pid, SIGCONT) == -1) {
-                PLOGE("kill(SIGCONT) on PID %d", pid);
+                PLOGE("kill(SIGCONT) on pid %d", pid);
                 BAIL_AND_DETACH
             }
 
@@ -629,12 +637,12 @@ static bool trace_with_seize(int pid, TraceMode mode) {
 
 // --- Strategy 2: PTRACE_ATTACH (Fallback) ---
 
-static bool trace_with_attach(int pid, TraceMode mode) {
-    LOGI("falling back to trace_attach on PID %d", pid);
+static bool trace_with_attach(int pid, TraceMode mode, bool *hooked) {
+    LOGV("trying PTRACE_ATTACH on pid %d", pid);
 
     // Classic attach. This sends SIGSTOP to the process immediately.
     if (ptrace(PTRACE_ATTACH, pid, 0, 0) == -1) {
-        PLOGE("ptrace(PTRACE_ATTACH) on PID %d", pid);
+        PLOGE("ptrace(PTRACE_ATTACH) on pid %d", pid);
         return false;
     }
 
@@ -654,7 +662,7 @@ static bool trace_with_attach(int pid, TraceMode mode) {
         }
 
         // 1. Inject Payload
-        if (!perform_injection(pid, mode)) {
+        if (!perform_injection(pid, mode, hooked)) {
             ptrace(PTRACE_DETACH, pid, 0, 0);
             return false;
         }
@@ -682,12 +690,13 @@ static bool trace_with_attach(int pid, TraceMode mode) {
  *
  * @return True on success, false on failure.
  */
-bool trace_target(int pid, TraceMode mode) {
-    LOGI("attaching to process [PID: %d, mode : %d]", pid, mode);
+bool trace_target(int pid, TraceMode mode, bool *hooked) {
+    LOGI("attaching to pid %d in %s mode", pid, name_of(mode));
+    if (hooked != nullptr) *hooked = false;
 
     // 1. Try SEIZE (Modern, robust handling of group stops)
-    if (trace_with_seize(pid, mode)) {
-        LOGI("successfully detached from %d (via SEIZE), NeoZygisk active", pid);
+    if (trace_with_seize(pid, mode, hooked)) {
+        LOGI("injected pid %d and detached, via PTRACE_SEIZE", pid);
         return true;
     }
 
@@ -697,14 +706,14 @@ bool trace_target(int pid, TraceMode mode) {
     if (errno == EIO) {
         LOGW("PTRACE_SEIZE failed with EIO, attempting fallback to PTRACE_ATTACH");
 
-        if (trace_with_attach(pid, mode)) {
-            LOGI("successfully detached from %d (via ATTACH), NeoZygisk active", pid);
+        if (trace_with_attach(pid, mode, hooked)) {
+            LOGI("injected pid %d and detached, via PTRACE_ATTACH", pid);
             return true;
         }
     } else {
         // If it wasn't EIO (e.g., EPERM, ESRCH), Attach will likely fail too,
         // or the error is fatal.
-        PLOGE("PTRACE_SEIZE failed (errno: %d)", errno);
+        PLOGE("PTRACE_SEIZE on pid %d", pid);
     }
 
     return false;

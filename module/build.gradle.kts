@@ -27,7 +27,6 @@ val verName: String by rootProject.extra
 val minAPatchVersion: Int by rootProject.extra
 val minKsuVersion: Int by rootProject.extra
 val minKsudVersion: Int by rootProject.extra
-val maxKsuVersion: Int by rootProject.extra
 val minMagiskVersion: Int by rootProject.extra
 val workDirectory: String by rootProject.extra
 val commitHash: String by rootProject.extra
@@ -77,7 +76,6 @@ androidComponents.onVariants { variant ->
                 "MIN_APATCH_VERSION" to "$minAPatchVersion",
                 "MIN_KSU_VERSION" to "$minKsuVersion",
                 "MIN_KSUD_VERSION" to "$minKsudVersion",
-                "MAX_KSU_VERSION" to "$maxKsuVersion",
                 "MIN_MAGISK_VERSION" to "$minMagiskVersion",
                 "WORK_DIRECTORY" to "$workDirectory",
             )

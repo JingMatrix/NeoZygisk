@@ -15,8 +15,6 @@ use num_enum::TryFromPrimitive;
 pub const MIN_APATCH_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MIN_APATCH_VERSION")));
 /// The minimum compatible version of KernelSU.
 pub const MIN_KSU_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MIN_KSU_VERSION")));
-/// The maximum compatible version of KernelSU.
-pub const MAX_KSU_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MAX_KSU_VERSION")));
 /// The minimum compatible version of Magisk.
 pub const MIN_MAGISK_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MIN_MAGISK_VERSION")));
 /// The version of the NeoZygisk daemon itself.

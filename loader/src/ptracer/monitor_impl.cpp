@@ -45,12 +45,23 @@ void AppMonitor::write_abi_status_section(std::string &status_text, std::string 
     status_text += "\n\tzygote";
     status_text += abi_name;
     status_text += ":";
-    if (tracing_state_ != TRACING)
+    if (tracing_state_ != TRACING) {
         status_text += "\t❓ unknown";
-    else if (daemon_status.zygote_injected)
-        status_text += "\t😋 injected";
-    else
-        status_text += "\t❌ not injected";
+    } else {
+        switch (daemon_status.zygote) {
+        case ZygoteState::Injected:
+            status_text += "\t😋 injected";
+            break;
+        case ZygoteState::NeedsRestart:
+            // Our library is in there, but nothing answered its heartbeat, and a second
+            // injection cannot reach a process that already carries it.
+            status_text += "\t⚠️ needs restart";
+            break;
+        default:
+            status_text += "\t❌ not injected";
+            break;
+        }
+    }
 
     status_text += "\n\tdaemon";
     status_text += abi_name;
@@ -199,7 +210,7 @@ void AppMonitor::request_exit() {
     event_loop_.Stop();
 }
 
-void AppMonitor::request_rearm() {
+RearmResult AppMonitor::request_rearm() {
     LOGI("rearm requested");
 
     // A rearm asks for injection, so lift a stop the monitor put itself into after a
@@ -208,12 +219,14 @@ void AppMonitor::request_rearm() {
         request_start();
     }
 
-    if (!zygote_.rearm()) {
+    auto result = zygote_.rearm();
+    if (result == RearmResult::Failed) {
         request_stop("rearm failed");
-        return;
+        return result;
     }
 
     update_status();
+    return result;
 }
 
 void AppMonitor::notify_init_detached() {
@@ -224,8 +237,22 @@ void AppMonitor::notify_init_detached() {
 // --- SocketHandler Method Implementations ---
 
 int AppMonitor::SocketHandler::GetFd() { return sock_fd_; }
+
 AppMonitor::SocketHandler::~SocketHandler() {
     if (sock_fd_ >= 0) close(sock_fd_);
+}
+
+void AppMonitor::SocketHandler::answer(const struct sockaddr_un &peer, socklen_t peerlen,
+                                       RearmResult result) {
+    // An unbound sender has no address to be answered at, which is the normal case: the
+    // daemon's notifications want no reply, and neither does `ctl` for anything but a
+    // rearm. Only a caller that bound a name gets one.
+    if (peerlen <= static_cast<socklen_t>(sizeof(sa_family_t))) return;
+
+    auto byte = static_cast<uint8_t>(result);
+    if (sendto(sock_fd_, &byte, sizeof(byte), 0, (const struct sockaddr *) &peer, peerlen) == -1) {
+        PLOGE("answer the rearm with %s", name_of(result));
+    }
 }
 
 bool AppMonitor::SocketHandler::Init() {
@@ -265,20 +292,21 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
             continue;
         }
         ssize_t real_size;
-        // Only these two carry a payload; every other command is the bare enum value.
-        if (msg_header.cmd == Command::DAEMON_SET_INFO ||
+        // Only these carry a payload; every other command is the bare enum value.
+        if (msg_header.cmd == Command::ZYGOTE_INJECTED ||
+            msg_header.cmd == Command::DAEMON_SET_INFO ||
             msg_header.cmd == Command::DAEMON_SET_ERROR_INFO) {
             if (static_cast<size_t>(nread) < sizeof(MsgHead)) {
-                LOGE("SocketHandler: received incomplete header for cmd %d, size %zd",
-                     msg_header.cmd, nread);
+                LOGE("SocketHandler: incomplete header for command %s (%d), size %zd",
+                     name_of(msg_header.cmd), msg_header.cmd, nread);
                 recv(sock_fd_, buf_.data(), buf_.size(), 0);
                 continue;
             }
             real_size = sizeof(MsgHead) + msg_header.length;
         } else {
             if (static_cast<size_t>(nread) != sizeof(Command)) {
-                LOGE("SocketHandler: received invalid size for cmd %d, size %zd", msg_header.cmd,
-                     nread);
+                LOGE("SocketHandler: invalid size for command %s (%d), size %zd",
+                     name_of(msg_header.cmd), msg_header.cmd, nread);
                 recv(sock_fd_, buf_.data(), buf_.size(), 0);
                 continue;
             }
@@ -286,7 +314,11 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
         }
         buf_.resize(real_size);
         MsgHead &full_msg = *reinterpret_cast<MsgHead *>(buf_.data());
-        nread = recv(sock_fd_, &full_msg, real_size, 0);
+        // Read the sender's address along with the message: a `ctl rearm` waits for the
+        // verdict, and only an address can carry it back.
+        struct sockaddr_un peer{};
+        socklen_t peerlen = sizeof(peer);
+        nread = recvfrom(sock_fd_, &full_msg, real_size, 0, (struct sockaddr *) &peer, &peerlen);
         if (nread == -1) {
             PLOGE("recv(read)");
             continue;
@@ -307,12 +339,22 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
             monitor_.request_exit();
             break;
         case REARM:
-            monitor_.request_rearm();
+            answer(peer, peerlen, monitor_.request_rearm());
             break;
-        case ZYGOTE_INJECTED:
-            monitor_.get_abi_manager().notify_injected();
+        case ZYGOTE_INJECTED: {
+            // The daemon names the process whose heartbeat it answered, since that is the
+            // only hooked process it can vouch for.
+            pid_t injected = -1;
+            if (full_msg.length == sizeof(injected)) {
+                memcpy(&injected, full_msg.data, sizeof(injected));
+            } else {
+                LOGW("SocketHandler: zygote_injected carries %d bytes, expected %zu",
+                     full_msg.length, sizeof(injected));
+            }
+            monitor_.get_abi_manager().notify_injected(injected);
             monitor_.update_status();
             break;
+        }
         case DAEMON_SET_INFO:
             monitor_.get_abi_manager().set_daemon_info({full_msg.data, (size_t) full_msg.length});
             monitor_.update_status();
@@ -324,6 +366,9 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
             break;
         case SYSTEM_SERVER_STARTED:
             LOGV("system server started, module.prop updated");
+            break;
+        default:
+            LOGW("SocketHandler: ignoring unknown command %d", full_msg.cmd);
             break;
         }
     }
@@ -616,7 +661,8 @@ bool AppMonitor::SigChldHandler::handleExecEvent(int pid, int &status) {
 
         // --- Zygote Target Validation ---
         if (monitor_.get_tracing_state() != TRACING) {
-            LOGW("ignoring potential target %d because tracing state is STOPPED", pid);
+            LOGW("ignoring potential target %d, tracing state is %s", pid,
+                 name_of(monitor_.get_tracing_state()));
             break;
         }
 

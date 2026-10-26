@@ -5,7 +5,6 @@ DEBUG=@DEBUG@
 MIN_APATCH_VERSION=@MIN_APATCH_VERSION@
 MIN_KSU_VERSION=@MIN_KSU_VERSION@
 MIN_KSUD_VERSION=@MIN_KSUD_VERSION@
-MAX_KSU_VERSION=@MAX_KSU_VERSION@
 MIN_MAGISK_VERSION=@MIN_MAGISK_VERSION@
 
 if [ "$BOOTMODE" ] && [ "$APATCH" ]; then
@@ -16,7 +15,7 @@ if [ "$BOOTMODE" ] && [ "$APATCH" ]; then
     ui_print "! Please update APatch to latest version"
     abort    "*********************************************************"
   fi
-  if [ "$(which magisk)" ]; then
+  if command -v magisk >/dev/null 2>&1; then
     ui_print "*********************************************************"
     ui_print "! Multiple root implementation is NOT supported!"
     ui_print "! Please uninstall Magisk before installing NeoZygisk"
@@ -30,11 +29,6 @@ elif [ "$BOOTMODE" ] && [ "$KSU" ]; then
     ui_print "! KernelSU version is too old!"
     ui_print "! Please update KernelSU to latest version"
     abort    "*********************************************************"
-  elif [ "$KSU_KERNEL_VER_CODE" -ge "$MAX_KSU_VERSION" ]; then
-    ui_print "*********************************************************"
-    ui_print "! KernelSU version too large!"
-    ui_print "! Support for KernelSU (variant) could be incomplete"
-    ui_print "*********************************************************"
   fi
   if ! [ "$KSU_VER_CODE" ] || [ "$KSU_VER_CODE" -lt "$MIN_KSUD_VERSION" ]; then
     ui_print "*********************************************************"
@@ -42,7 +36,7 @@ elif [ "$BOOTMODE" ] && [ "$KSU" ]; then
     ui_print "! Please update KernelSU Manager to latest version"
     abort    "*********************************************************"
   fi
-  if [ "$(which magisk)" ]; then
+  if command -v magisk >/dev/null 2>&1; then
     ui_print "*********************************************************"
     ui_print "! Multiple root implementation is NOT supported!"
     ui_print "! Please uninstall Magisk before installing NeoZygisk"
@@ -105,14 +99,14 @@ if [ "$KSU" ]; then
 fi
 
 ui_print "- Extracting module files"
-extract "$ZIPFILE" 'action.sh'     "$MODPATH"
+extract "$ZIPFILE" 'action.sh'       "$MODPATH"
 extract "$ZIPFILE" 'module.prop'     "$MODPATH"
 extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'late-load.sh'    "$MODPATH"
 extract "$ZIPFILE" 'post-mount.sh'   "$MODPATH"
 extract "$ZIPFILE" 'hotinstall.sh'   "$MODPATH"
 extract "$ZIPFILE" 'service.sh'      "$MODPATH"
-extract "$ZIPFILE" 'uninstall.sh'      "$MODPATH"
+extract "$ZIPFILE" 'uninstall.sh'    "$MODPATH"
 mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 
 mkdir "$MODPATH/bin"
@@ -154,6 +148,9 @@ set_perm_recursive "$MODPATH/bin" 0 0 0755 0755
 set_perm_recursive "$MODPATH/lib" 0 0 0755 0644 u:object_r:system_lib_file:s0
 set_perm_recursive "$MODPATH/lib64" 0 0 0755 0644 u:object_r:system_lib_file:s0
 
+# The one script meant to be run by hand; the rest are sourced or started by a manager.
+set_perm "$MODPATH/late-load.sh" 0 0 0755
+
 # If Huawei's Maple is enabled, system_server is created with a special way which is out of Zygisk's control
 HUAWEI_MAPLE_ENABLED=$(grep_prop ro.maple.enable)
 if [ "$HUAWEI_MAPLE_ENABLED" == "1" ]; then
@@ -161,11 +158,9 @@ if [ "$HUAWEI_MAPLE_ENABLED" == "1" ]; then
   echo "ro.maple.enable=0" >>"$MODPATH/system.prop"
 fi
 
-# NeoZygisk is binaries and scripts only, so none of what it installs waits for a boot
-# stage: hotinstall.sh replaces the running monitor and restarts zygote, which is all an
-# update needs. The Maple workaround above is the one exception. KernelSU loads a
-# system.prop from post-fs-data and from late load, but its hot-install path deliberately
-# loads none, so a build that wrote one has to take the reboot.
+# Nothing NeoZygisk installs waits for a boot stage, so hotinstall.sh can apply an update in
+# place. The Maple workaround above is the exception: KSU's hot-install path loads no
+# system.prop, so a build that wrote one has to take the reboot.
 if [ "$KSU" ] && [ ! -f "$MODPATH/system.prop" ]; then
   ui_print "- Applying without a reboot"
   export MODULE_HOT_INSTALL_REQUEST=true

@@ -17,6 +17,8 @@
 #include "daemon.hpp"  // For GetTmpPath
 #include "logging.hpp"
 #include "monitor.hpp"
+#include "stage.hpp"
+#include "utils.hpp"
 
 // Use string_view literals for efficient, allocation-free string comparisons.
 using namespace std::string_view_literals;
@@ -35,13 +37,12 @@ static void control_socket_addr(struct sockaddr_un &addr, socklen_t &socklen) {
 /**
  * @brief Reports whether a monitor is currently bound to the control socket.
  *
- * The socket file outlives whoever bound it, so its presence proves nothing. Connecting a
- * datagram socket to the path does: it succeeds only while a process holds the name, and
- * fails with ECONNREFUSED once that process is gone. This is what keeps the single-owner
+ * Connecting a datagram socket to the path succeeds only while a process holds the name,
+ * and fails with ECONNREFUSED once that process is gone. This is what keeps the single-owner
  * invariant in the monitor rather than in each caller -- every entry point may simply try
  * to start one, and a redundant monitor steps aside instead of fighting over init.
  */
-static bool monitor_is_running() {
+bool monitor_is_running() {
     int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (sockfd == -1) return false;
 
@@ -56,7 +57,7 @@ static bool monitor_is_running() {
 
 // The main entry point for the monitoring process.
 void init_monitor() {
-    LOGI("NeoZygisk %s", ZKSU_VERSION);
+    LOGI("monitor starting, NeoZygisk %s", ZKSU_VERSION);
 
     // Exactly one monitor may exist: two would both seize init and race over the same
     // control socket and status file. Checking here, before prepare_environment(), keeps
@@ -77,53 +78,91 @@ void init_monitor() {
     LOGI("exit");
 }
 
-// The entry point for the command-line control utility. Returns false if no monitor could
-// be reached within the retry budget.
-bool send_control_command(Command cmd) {
-    // A caller may arrive while the monitor it depends on is still starting: on the
-    // late-load path the bootstrap stage backgrounds the monitor and a later stage sends
-    // `rearm`, with only the mount step in between. Retry rather than make every caller
-    // implement its own wait, but keep the budget short so a genuinely absent monitor is
-    // reported promptly.
-    constexpr int kRetries = 10;
-    constexpr useconds_t kRetryDelayUs = 200 * 1000;
+// A caller may arrive while the monitor it depends on is still starting: on the late-load
+// path the bootstrap stage backgrounds the monitor and a later stage sends `rearm`, with
+// only the mount step in between. Retry rather than make every caller implement its own
+// wait, but keep the budget short so a genuinely absent monitor is reported promptly.
+static constexpr int kSendRetries = 10;
+static constexpr useconds_t kSendRetryDelayUs = 200 * 1000;
 
+// A rearm injects whatever is running and waits for each injection, and a heartbeat that
+// goes unanswered costs about five seconds of that. The answer is worth waiting for: it
+// carries what the rearm achieved, which nothing outside the monitor can work out.
+static constexpr int kAnswerTimeoutSec = 30;
+
+/// Sends one command on \p sockfd, retrying while the monitor is still coming up. Returns
+/// false when none could be reached within the budget.
+static bool send_to_monitor(int sockfd, Command cmd) {
     struct sockaddr_un addr{};
     socklen_t socklen;
     control_socket_addr(addr, socklen);
 
-    for (int attempt = 0; attempt < kRetries; ++attempt) {
-        if (attempt > 0) usleep(kRetryDelayUs);
-
-        int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-        if (sockfd == -1) {
-            warn("socket");
-            continue;
-        }
+    for (int attempt = 0; attempt < kSendRetries; ++attempt) {
+        if (attempt > 0) usleep(kSendRetryDelayUs);
 
         auto nsend = sendto(sockfd, (void *) &cmd, sizeof(cmd), 0, (sockaddr *) &addr, socklen);
-        int saved_errno = errno;
-        close(sockfd);
-
-        if (nsend == static_cast<ssize_t>(sizeof(cmd))) {
-            printf("command sent\n");
-            return true;
-        }
+        if (nsend == static_cast<ssize_t>(sizeof(cmd))) return true;
         if (nsend != -1) {
             fprintf(stderr, "send %zd != %zu\n", nsend, sizeof(cmd));
             return false;
         }
         // ENOENT: the work directory has no socket yet. ECONNREFUSED: the file is there
         // but unbound, so the previous owner is gone. Both are worth waiting out.
-        if (saved_errno != ENOENT && saved_errno != ECONNREFUSED) {
-            errno = saved_errno;
+        if (errno != ENOENT && errno != ECONNREFUSED) {
             warn("send");
             return false;
         }
     }
 
-    fprintf(stderr, "error: no monitor is listening on the control socket\n");
     return false;
+}
+
+// The entry point for the command-line control utility. Returns false if no monitor could
+// be reached within the retry budget.
+bool send_control_command(Command cmd) {
+    int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (sockfd == -1) {
+        warn("socket");
+        return false;
+    }
+    bool sent = send_to_monitor(sockfd, cmd);
+    close(sockfd);
+    return sent;
+}
+
+RearmResult send_rearm_command() {
+    int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (sockfd == -1) {
+        warn("socket");
+        return RearmResult::Failed;
+    }
+
+    // Bound with an empty path, which has Linux assign an abstract name of its own. Without
+    // a name of some kind this socket has no address for the monitor to answer at, and the
+    // verdict would be dropped rather than delivered.
+    struct sockaddr_un self{.sun_family = AF_UNIX, .sun_path = {0}};
+    struct timeval timeout{.tv_sec = kAnswerTimeoutSec, .tv_usec = 0};
+    auto result = RearmResult::Failed;
+    if (bind(sockfd, (sockaddr *) &self, sizeof(sa_family_t)) == -1) {
+        warn("bind reply socket");
+    } else if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1) {
+        warn("set the reply timeout");
+    } else if (send_to_monitor(sockfd, REARM)) {
+        uint8_t answer = 0;
+        auto nread = recv(sockfd, &answer, sizeof(answer), 0);
+        if (nread == static_cast<ssize_t>(sizeof(answer)) &&
+            answer <= static_cast<uint8_t>(RearmResult::NeedsRestart)) {
+            result = static_cast<RearmResult>(answer);
+        } else if (nread == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            fprintf(stderr, "error: the monitor took the rearm but did not answer in %ds\n",
+                    kAnswerTimeoutSec);
+        } else {
+            fprintf(stderr, "error: unreadable answer to the rearm\n");
+        }
+    }
+
+    close(sockfd);
+    return result;
 }
 
 // --- Command Handler Declarations ---
@@ -132,6 +171,7 @@ static void print_usage(const char *tool_name);
 static int handle_monitor();
 static int handle_trace(int argc, char **argv);
 static int handle_ctl(int argc, char **argv);
+static int handle_stage(int argc, char **argv);
 static int handle_version();
 
 // Global variable so our signal handler knows which PID to rescue. sig_atomic_t because
@@ -144,8 +184,8 @@ static volatile sig_atomic_t g_traced_pid = 0;
  */
 static void handle_interrupt(int sig) {
     if (g_traced_pid > 0) {
-        printf("\n[!] received signal %d, safely detaching from PID %d to prevent crash...\n", sig,
-               (int) g_traced_pid);
+        printf("\n[!] received %s, safely detaching from pid %d to prevent crash\n",
+               sigabbrev_np(sig), (int) g_traced_pid);
 
         // PTRACE_DETACH with SIGCONT ensures the process resumes execution
         ptrace(PTRACE_DETACH, (pid_t) g_traced_pid, 0, SIGCONT);
@@ -161,6 +201,12 @@ static void handle_interrupt(int sig) {
  * and delegating the work to a corresponding handler function.
  */
 int main(int argc, char **argv) {
+    // Whoever reads this reads it through a pipe -- a manager collecting a stage's output,
+    // or adb -- where the default block buffering holds stdout back until exit and lands it
+    // after everything written to stderr. Line buffering keeps the two in the order they
+    // were written.
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+
     // This initialization is for the daemon's internal logic, not for CLI output.
     zygiskd::Init(kWorkDirectory);
 
@@ -177,6 +223,13 @@ int main(int argc, char **argv) {
         return handle_trace(argc, argv);
     } else if (command == "ctl"sv) {
         return handle_ctl(argc, argv);
+    } else if (command == "stage"sv) {
+        return handle_stage(argc, argv);
+    } else if (command == "status"sv) {
+        return print_status();
+    } else if (command == "help"sv || command == "-h"sv || command == "--help"sv) {
+        print_usage(argv[0]);
+        return EXIT_SUCCESS;
     } else if (command == "version"sv) {
         return handle_version();
     } else {
@@ -192,11 +245,31 @@ int main(int argc, char **argv) {
  * @param tool_name The name of the executable, typically argv[0].
  */
 static void print_usage(const char *tool_name) {
-    fprintf(stderr, "NeoZygisk Tracer %s\n", ZKSU_VERSION);
     fprintf(stderr,
-            "usage: %s monitor | trace <pid> [--spawn | --standalone | --system_server] | ctl "
-            "<start|stop|exit|rearm> | version\n",
-            tool_name);
+            "NeoZygisk Tracer %s\n"
+            "\n"
+            "usage: %s <command> [<args>]\n"
+            "\n"
+            "  stage <name> [<options>]     run a boot stage, which is what each of the\n"
+            "                               module's shell entry points forwards to:\n"
+            "                               post-fs-data, post-mount, service, hotinstall,\n"
+            "                               late-load\n"
+            "  status                       print what the monitor and the daemon report\n"
+            "  monitor                      trace init and inject every zygote it forks\n"
+            "  ctl <start|stop|exit|rearm>  send one command to the running monitor\n"
+            "  trace <pid> [<mode>]         inject one running process, where mode is\n"
+            "                               --spawn, --standalone or --system_server\n"
+            "  version                      print the version\n"
+            "  help                         print this text\n"
+            "\n"
+            "stage options, all of them late-load only except where noted:\n"
+            "  -i, --ignore-disable         also load modules marked disabled, and run their\n"
+            "                               boot scripts (any stage that fans out)\n"
+            "  -p, --permissive             set SELinux permissive when the loaded policy is\n"
+            "                               missing our rules\n"
+            "  -s, --stop                   undo an arm: stop the monitor, and restart zygote\n"
+            "                               if it still carries our library\n",
+            ZKSU_VERSION, tool_name);
 }
 
 /**
@@ -234,7 +307,7 @@ static int handle_trace(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     pid_t pid = static_cast<pid_t>(pid_val);
-    printf("preparing to trace PID: %d\n", pid);
+    printf("preparing to trace pid %d\n", pid);
 
     // --- Flag Parsing ---
     TraceMode mode = TraceMode::UNKNOWN;
@@ -280,7 +353,8 @@ static int handle_trace(int argc, char **argv) {
     // in zygiskd::Connect() -- PingHeartbeat uses Connect(5), i.e. four one-second retries
     // -- which comfortably outlasts a fork+exec of zygiskd. The retries run inside the
     // ptrace-stopped tracee, so the only cost of losing the race is a short stall.
-    if (!trace_target(pid, mode)) {
+    bool hooked = false;
+    if (!trace_target(pid, mode, &hooked)) {
         // Resume the target uninjected rather than killing it, in every mode. A SPAWN
         // target is parked in SIGSTOP by the monitor, so it must be released or the boot
         // hangs; killing it instead feeds a zygote restart loop, which Android's
@@ -291,13 +365,22 @@ static int handle_trace(int argc, char **argv) {
         fprintf(stderr, "error: failed to trace %s, resuming process %d uninjected\n", target, pid);
         ptrace(PTRACE_DETACH, pid, 0, SIGCONT);
         kill(pid, SIGCONT);
-        return EXIT_FAILURE;
+        return TRACE_FAILED;
     }
 
     // Success, reset the global PID so we don't accidentally send signals on exit
     g_traced_pid = 0;
-    printf("successfully attached and injected into PID: %d\n", pid);
-    return EXIT_SUCCESS;
+    if (!hooked) {
+        // The library is in there and cannot be taken back out, so this is not a failure
+        // that can be retried: whoever asked for the injection has to restart the target.
+        fprintf(stderr,
+                "error: pid %d took the library but no daemon answered its heartbeat, so it "
+                "carries no hooks\n",
+                pid);
+        return TRACE_MAPPED_ONLY;
+    }
+    printf("successfully attached and injected into pid %d\n", pid);
+    return TRACE_HOOKED;
 }
 
 /**
@@ -315,6 +398,18 @@ static int handle_ctl(int argc, char **argv) {
     const auto action = std::string_view(argv[2]);
     printf("sending control command: '%s'\n", argv[2]);
 
+    // Rearm is the one command with something to report, and the monitor answers it once
+    // the injection it asks for is done.
+    if (action == "rearm"sv) {
+        auto result = send_rearm_command();
+        if (result == RearmResult::Failed) {
+            fprintf(stderr, "error: the rearm was not carried out\n");
+            return EXIT_FAILURE;
+        }
+        printf("rearm done: %s\n", name_of(result));
+        return EXIT_SUCCESS;
+    }
+
     Command cmd;
     if (action == "start"sv) {
         cmd = START;
@@ -322,17 +417,68 @@ static int handle_ctl(int argc, char **argv) {
         cmd = STOP;
     } else if (action == "exit"sv) {
         cmd = EXIT;
-    } else if (action == "rearm"sv) {
-        cmd = REARM;
     } else {
         fprintf(stderr, "error: unknown ctl action: '%s'\n", argv[2]);
         print_usage(argv[0]);
         return EXIT_FAILURE;
     }
 
-    // Report delivery, so a stage script can tell "the monitor acted on this" from "there
-    // was no monitor to tell". The command itself is fire-and-forget past this point.
-    return send_control_command(cmd) ? EXIT_SUCCESS : EXIT_FAILURE;
+    if (!send_control_command(cmd)) {
+        fprintf(stderr, "error: no monitor is listening on the control socket\n");
+        return EXIT_FAILURE;
+    }
+    printf("command sent\n");
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief Handles the 'stage' command.
+ *
+ * Runs one boot stage. The module ships a shell file per stage name because that is how
+ * managers invoke them; each one forwards here, so the rules live in one place.
+ */
+static int handle_stage(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "error: stage command requires a name\n");
+        print_usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    const auto name = std::string_view(argv[2]);
+    Stage stage;
+    if (!parse_stage(name, stage)) {
+        fprintf(stderr, "error: unknown stage: '%s'\n", argv[2]);
+        print_usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    StageOptions options;
+    for (int i = 3; i < argc; ++i) {
+        const auto flag = std::string_view(argv[i]);
+        if (flag == "-i"sv || flag == "--ignore-disable"sv) {
+            options.ignore_disable = true;
+        } else if (flag == "-p"sv || flag == "--permissive"sv) {
+            options.permissive = true;
+        } else if (flag == "-s"sv || flag == "--stop"sv) {
+            options.stop = true;
+        } else if (flag == "-h"sv || flag == "--help"sv) {
+            print_usage(argv[0]);
+            return EXIT_SUCCESS;
+        } else {
+            fprintf(stderr, "error: unknown stage option: '%s'\n", argv[i]);
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+    }
+
+    // Refuse what a stage cannot honour rather than ignoring it: both of these only mean
+    // something on the path that a root shell drives.
+    if ((options.permissive || options.stop) && stage != Stage::LateLoad) {
+        fprintf(stderr, "error: --permissive and --stop apply to the late-load stage only\n");
+        return EXIT_FAILURE;
+    }
+
+    return run_stage(stage, options);
 }
 
 /**

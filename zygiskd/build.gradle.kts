@@ -4,7 +4,6 @@ plugins {
 
 val minAPatchVersion: Int by rootProject.extra
 val minKsuVersion: Int by rootProject.extra
-val maxKsuVersion: Int by rootProject.extra
 val minMagiskVersion: Int by rootProject.extra
 val verCode: Int by rootProject.extra
 val verName: String by rootProject.extra
@@ -63,7 +62,6 @@ listOf("Debug", "Release").forEach { variantCap ->
                 environment("ANDROID_NDK_HOME", ndkFile.absolutePath)
                 environment("MIN_APATCH_VERSION", minAPatchVersion.toString())
                 environment("MIN_KSU_VERSION", minKsuVersion.toString())
-                environment("MAX_KSU_VERSION", maxKsuVersion.toString())
                 environment("MIN_MAGISK_VERSION", minMagiskVersion.toString())
                 environment("ZKSU_VERSION", "$verName-$verCode-$commitHash-$profileName")
                 commandLine(cargoArgs)

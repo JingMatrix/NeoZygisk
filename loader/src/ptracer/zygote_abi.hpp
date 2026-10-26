@@ -2,9 +2,11 @@
 
 #include <sys/types.h>
 
+#include <set>
 #include <string>
 #include <string_view>
 
+#include "main.hpp"
 #include "types.hpp"
 
 // Forward declaration to break circular dependency
@@ -29,15 +31,16 @@ public:
     const char* check_and_prepare_injection();
 
     /// Live-attach to this ABI's zygote and to system_server if they are already running
-    /// and not yet injected. Returns false when the daemon could not be made ready, which
-    /// is the only failure the caller can act on. A per-process attach happens in a
-    /// detached child, so its outcome is not reported back: the process is resumed
-    /// uninjected and the status file simply never shows it as injected.
-    bool rearm();
+    /// and not yet hooked, and report what came of it. Each attach is waited for, so the
+    /// answer covers the heartbeat as well as the injection.
+    RearmResult rearm();
 
     // Public methods for state modification
     const Status& get_status() const;
-    void notify_injected();
+
+    /// Records that \p pid came back from the daemon's heartbeat, which is the only proof
+    /// that a process carries working hooks. Reached from the daemon's notification.
+    void notify_injected(pid_t pid);
     void set_daemon_info(std::string_view info);
     void set_daemon_crashed(std::string_view error);
 
@@ -52,11 +55,20 @@ private:
     /// and that its module snapshot is new.
     bool ensure_daemon_created(bool* started = nullptr);
 
-    /// Fork off `tracer trace <pid> <mode_flag>` for one already-running process.
-    void attach_running(pid_t pid, const char* mode_flag, const char* what);
+    /// Runs `tracer trace <pid> <mode_flag>` for one already-running process and waits for
+    /// it. Returns whether the injector reported hooks: the library stays mapped either way,
+    /// so a caller that treats a bare injection as success would never notice the
+    /// difference until modules failed to load.
+    bool attach_running(pid_t pid, const char* mode_flag, const char* what);
 
     Status status_;
     StartCounter counter;
+
+    /// The processes whose hooks the current daemon confirmed. Keyed by pid because that is
+    /// what distinguishes a hooked zygote from one that merely has the library mapped, and
+    /// dropped wholesale when a new daemon starts: a heartbeat answered by a daemon that is
+    /// gone proves nothing about the session that replaced it.
+    std::set<pid_t> hooked_;
 
     /// Absolute paths, resolved once from /proc/self/exe. Relative ones would be read
     /// against a working directory that does not survive a reinstall, which is routine under

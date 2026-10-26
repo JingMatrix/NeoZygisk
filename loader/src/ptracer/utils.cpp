@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include "daemon.hpp"
 #include "logging.hpp"
 
 /**
@@ -741,4 +742,50 @@ bool has_library_mapped(pid_t pid, std::string_view suffix) {
         if (info.path.find(suffix) != std::string::npos) return true;
     }
     return false;
+}
+
+/**
+ * @brief Reads the tracer pid from /proc/[pid]/status.
+ */
+pid_t get_tracer_pid(pid_t pid) {
+    std::string path = "/proc/" + std::to_string(pid) + "/status";
+    auto file = std::unique_ptr<FILE, decltype(&fclose)>(fopen(path.c_str(), "re"), &fclose);
+    if (file == nullptr) return -1;
+
+    char line[256];
+    while (fgets(line, sizeof(line), file.get()) != nullptr) {
+        int tracer = -1;
+        if (sscanf(line, "TracerPid: %d", &tracer) == 1) return tracer;
+    }
+    return -1;
+}
+
+/**
+ * @brief Tests whether argv says a process is a zygote.
+ */
+bool has_zygote_cmdline(pid_t pid) {
+    auto argv = read_cmdline(pid);
+    if (argv.empty()) return false;
+
+    std::string_view name = argv.front();
+    if (auto slash = name.rfind('/'); slash != std::string_view::npos) {
+        name.remove_prefix(slash + 1);
+    }
+    if (name.starts_with("zygote")) return true;
+
+    for (const auto &arg : argv) {
+        if (arg == "--zygote") return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Finds every running zygote of this build's own ABI.
+ */
+std::vector<pid_t> find_zygotes() {
+    std::vector<pid_t> found;
+    for (auto pid : find_processes_by_exe(kZygoteProgram)) {
+        if (get_ppid(pid) == 1 && has_zygote_cmdline(pid)) found.push_back(pid);
+    }
+    return found;
 }

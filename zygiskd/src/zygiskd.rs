@@ -88,7 +88,7 @@ static DAEMON_SOCKET_PATH: OnceLock<String> = OnceLock::new();
 
 /// The main function for the zygiskd daemon.
 pub fn main(tmp_path: Option<&str>) -> Result<()> {
-    info!("Welcome to NeoZygisk ({}) !", ZKSU_VERSION);
+    info!("daemon starting, NeoZygisk {}", ZKSU_VERSION);
 
     initialize_globals(tmp_path)?;
     // Lenient at startup where a refresh is strict: the daemon serves the heartbeat, the
@@ -137,7 +137,7 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
     // never re-enters this accept path.
     const AID_ROOT: u32 = 0;
     const AID_SYSTEM: u32 = 1000;
-    match rustix::net::sockopt::socket_peercred(&stream) {
+    let peer_pid = match rustix::net::sockopt::socket_peercred(&stream) {
         Ok(cred) => {
             let uid = cred.uid.as_raw();
             if uid != AID_ROOT && uid != AID_SYSTEM {
@@ -147,6 +147,7 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
                 );
                 return Ok(());
             }
+            cred.pid.as_raw_nonzero().get()
         }
         Err(e) => {
             warn!(
@@ -155,7 +156,7 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
             );
             return Ok(());
         }
-    }
+    };
 
     let action = stream.read_u8()?;
     let action = DaemonSocketAction::try_from(action)
@@ -174,8 +175,14 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
                 .save_mount_namespace(pid, MountNamespace::Root)?;
         }
         DaemonSocketAction::PingHeartbeat => {
-            let value = constants::ZYGOTE_INJECTED;
-            utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &value.to_le_bytes())?;
+            // Name the process this answers for. The controller cannot work it out from the
+            // outside: our library stays mapped in a zygote whether or not the heartbeat
+            // ever reached a daemon, and only one of those two is hooked.
+            let mut msg = Vec::<u8>::new();
+            msg.extend_from_slice(&constants::ZYGOTE_INJECTED.to_le_bytes());
+            msg.extend_from_slice(&(peer_pid.to_le_bytes().len() as u32).to_le_bytes());
+            msg.extend_from_slice(&peer_pid.to_le_bytes());
+            utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &msg)?;
         }
         DaemonSocketAction::ZygoteRestart => {
             info!("Zygote restarted, dropping companions and rescanning modules.");
@@ -269,7 +276,7 @@ fn initialize_globals(tmp_path: Option<&str>) -> Result<()> {
         .set(format!(
             "{}/{}",
             TMP_PATH.get().unwrap(),
-            lp_select!("/cp32.sock", "/cp64.sock")
+            lp_select!("cp32.sock", "cp64.sock")
         ))
         .unwrap();
     Ok(())
@@ -326,6 +333,13 @@ fn load_modules() -> Result<Vec<Module>> {
     let arch = get_arch()?;
     debug!("Daemon architecture: {arch}");
 
+    // `late-load.sh -i` hands this down through the monitor that forked us, for a run with
+    // no manager to clear the disable flags it left behind.
+    let ignore_disable = std::env::var("ZYGISK_IGNORE_DISABLE").is_ok_and(|v| !v.is_empty());
+    if ignore_disable {
+        info!("Loading modules that are marked disabled, as requested");
+    }
+
     let mut modules = Vec::new();
     let dir = match fs::read_dir(constants::PATH_MODULES_DIR) {
         Ok(dir) => dir,
@@ -346,9 +360,10 @@ fn load_modules() -> Result<Vec<Module>> {
     for entry in dir.flatten() {
         let name = entry.file_name().into_string().unwrap_or_default();
         let so_path = entry.path().join(format!("zygisk/{arch}.so"));
-        let disabled_flag = entry.path().join("disable");
-
-        if !so_path.exists() || disabled_flag.exists() {
+        if !so_path.exists() {
+            continue;
+        }
+        if !ignore_disable && entry.path().join("disable").exists() {
             continue;
         }
 

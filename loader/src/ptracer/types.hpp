@@ -8,9 +8,41 @@
 
 enum TracingState { TRACING = 1, STOPPING, STOPPED, EXITING };
 
+/// The name a state is logged under.
+inline const char *name_of(TracingState state) {
+    switch (state) {
+    case TRACING:
+        return "tracing";
+    case STOPPING:
+        return "stopping";
+    case STOPPED:
+        return "stopped";
+    case EXITING:
+        return "exiting";
+    default:
+        return "unknown";
+    }
+}
+
+/// What is known about this ABI's zygote. A library mapped into a zygote whose heartbeat no
+/// daemon ever answered is worth a state of its own: it cannot be injected a second time,
+/// and the hooks it is missing arrive only with a fresh zygote.
+enum class ZygoteState { NotInjected, Injected, NeedsRestart };
+
+inline const char *name_of(ZygoteState state) {
+    switch (state) {
+    case ZygoteState::Injected:
+        return "injected";
+    case ZygoteState::NeedsRestart:
+        return "needs restart";
+    default:
+        return "not injected";
+    }
+}
+
 struct Status {
     bool supported = false;
-    bool zygote_injected = false;
+    ZygoteState zygote = ZygoteState::NotInjected;
     bool daemon_running = false;
     pid_t daemon_pid = -1;
     std::string daemon_info;

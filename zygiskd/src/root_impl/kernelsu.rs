@@ -14,7 +14,7 @@
 //! All subsequent calls are then dispatched to the correct implementation instantly,
 //! avoiding any repeated detection overhead.
 
-use crate::constants::{MAX_KSU_VERSION, MIN_KSU_VERSION};
+use crate::constants::MIN_KSU_VERSION;
 use log::{info, warn};
 use std::ffi::c_char;
 use std::fs;
@@ -177,9 +177,6 @@ pub fn detect_version() -> Option<Version> {
                     // Success! A valid version was returned via ioctl.
                     let method = Method::Ioctl(fd);
                     if MIN_KSU_VERSION <= version_code && Path::new("/data/adb/ksud").exists() {
-                        if version_code > MAX_KSU_VERSION {
-                            warn!("Support for current KernelSU (variant) could be incomplete")
-                        }
                         // Version is supported and ksud exists. Cache the result and finish.
                         return Some(DetectionResult {
                             method,
@@ -192,8 +189,8 @@ pub fn detect_version() -> Option<Version> {
                             version: Version::TooOld,
                         });
                     }
-                    // If version is too high or ksud is missing, we fall through, treating it
-                    // as if this method failed to allow the prctl fallback to run.
+                    // If ksud is missing we fall through, treating it as if this method
+                    // failed, to allow the prctl fallback to run.
                 }
             }
         }
@@ -217,9 +214,6 @@ pub fn detect_version() -> Option<Version> {
             init_legacy_variant_probe();
             let method = Method::Prctl;
             if MIN_KSU_VERSION <= version_code && Path::new("/data/adb/ksud").exists() {
-                if version_code > MAX_KSU_VERSION {
-                    warn!("Support for current KernelSU (variant) could be incomplete")
-                }
                 return Some(DetectionResult {
                     method,
                     version: Version::Supported,
