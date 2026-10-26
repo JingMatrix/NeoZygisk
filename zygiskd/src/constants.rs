@@ -15,8 +15,6 @@ use num_enum::TryFromPrimitive;
 pub const MIN_APATCH_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MIN_APATCH_VERSION")));
 /// The minimum compatible version of KernelSU.
 pub const MIN_KSU_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MIN_KSU_VERSION")));
-/// The maximum compatible version of KernelSU.
-pub const MAX_KSU_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MAX_KSU_VERSION")));
 /// The minimum compatible version of Magisk.
 pub const MIN_MAGISK_VERSION: i32 = unwrap_ctx!(parse_i32(env!("MIN_MAGISK_VERSION")));
 /// The version of the NeoZygisk daemon itself.
@@ -30,8 +28,10 @@ pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Trace;
 #[cfg(not(debug_assertions))]
 pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Info;
 
-/// The relative path to the directory where Zygisk modules are stored.
-pub const PATH_MODULES_DIR: &str = "..";
+/// Where Zygisk modules live, the same path under APatch, KernelSU and Magisk. Absolute
+/// rather than resolved against the working directory, which a reinstall invalidates by
+/// renaming the live module directory away.
+pub const PATH_MODULES_DIR: &str = "/data/adb/modules";
 
 // --- IPC Constants ---
 // These are magic numbers used in communication with the controller.
@@ -58,6 +58,9 @@ pub enum DaemonSocketAction {
     GetModuleDir,
     ZygoteRestart,
     SystemServerStarted,
+    /// Rebuild the module snapshot from disk and acknowledge with 1 (ok) or 0 (kept the
+    /// previous snapshot). Must stay last to match `SocketAction` in `daemon.hpp`.
+    RefreshModules,
 }
 
 bitflags! {

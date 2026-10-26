@@ -1,8 +1,5 @@
-printf "Status of NeoZygisk\n\n"
+#!/system/bin/sh
 
-cat @WORK_DIRECTORY@/module.prop
-
-if [[ -z "$MMRL" ]] && ([[ -n "$KSU" ]] || [[ -n "$APATCH" ]]); then
-	# Avoid instant exit on KernelSU or APatch
-	sleep 5
-fi
+TRACER=${0%/*}/bin/zygisk-ptrace64
+[ -f "$TRACER" ] || TRACER=${0%/*}/bin/zygisk-ptrace32
+exec "$TRACER" status

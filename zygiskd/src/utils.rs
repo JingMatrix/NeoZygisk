@@ -14,6 +14,7 @@ use rustix::net::{
 use rustix::thread as rustix_thread;
 use std::ffi::{CString, c_char};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::{PermissionsExt, chown};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::{
@@ -77,12 +78,6 @@ pub fn set_socket_create_context(context: &str) -> Result<()> {
 pub fn get_current_attr() -> Result<String> {
     let s = fs::read_to_string("/proc/self/attr/current")?;
     Ok(s.trim().to_string())
-}
-
-/// Changes the SELinux context of a file using the `chcon` command.
-pub fn chcon(path: &str, context: &str) -> Result<()> {
-    Command::new("chcon").arg(context).arg(path).status()?;
-    Ok(())
 }
 
 /// Retrieves an Android system property value.
@@ -159,14 +154,24 @@ impl UnixStreamExt for UnixStream {
     }
 }
 
-/// Creates a `UnixListener` bound to a given path, handling file cleanup and SELinux contexts.
+/// Creates a `UnixListener` bound to a given path, with the label and mode its peers need.
 pub fn unix_listener_from_path(path: &str) -> Result<UnixListener> {
     let _ = fs::remove_file(path);
     let addr = SocketAddrUnix::new(path)?;
     let socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
     bind(&socket, &addr)?;
     listen(&socket, 10)?; // Backlog of 10
-    chcon(path, "u:object_r:zygisk_file:s0")?;
+    // Label the socket so the zygote domain may connect on enforcing-SELinux devices.
+    Command::new("chcon")
+        .arg("u:object_r:zygisk_file:s0")
+        .arg(path)
+        .status()?;
+    // As far as DAC has to open: a late-injected system_server connects as system without
+    // capabilities, while zygote and the monitor are root and override DAC anyway. Matches
+    // the SO_PEERCRED check in `handle_connection`, which admits only root and system.
+    const AID_SYSTEM: u32 = 1000;
+    chown(path, None, Some(AID_SYSTEM))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
     Ok(UnixListener::from(socket))
 }
 

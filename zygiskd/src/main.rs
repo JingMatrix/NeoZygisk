@@ -82,6 +82,7 @@ mod utils;
 mod zygiskd;
 
 use crate::constants::ZKSU_VERSION;
+use anyhow::Context;
 use log::error;
 
 /// Initializes the Android logger with a specific tag.
@@ -134,6 +135,11 @@ fn start() {
 /// The main entry point for the Zygisk daemon.
 /// It sets up the environment and launches the core daemon logic.
 fn main_daemon_entry(tmp_path: Option<&str>) -> anyhow::Result<()> {
+    // Do not hold the module directory as the working directory. Inherited from the
+    // monitor, it does not survive a reinstall: ksud deletes the live directory before
+    // renaming the staged one in, which leaves this process on a deleted inode and breaks
+    // every later save and restore of the cwd across setns. Nothing here needs it.
+    std::env::set_current_dir("/").context("Failed to change to the root directory")?;
     // We must be in the root mount namespace to function correctly.
     mount::switch_mount_namespace(1)?;
     // Detect and globally set the root implementation.

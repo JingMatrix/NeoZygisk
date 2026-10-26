@@ -1,23 +1,7 @@
 #!/system/bin/sh
 
-DEBUG=@DEBUG@
-
-MODDIR=${0%/*}
-if [ "$ZYGISK_ENABLED" ]; then
-  exit 0
-fi
-
-cd "$MODDIR"
-
-if [ "$(which magisk)" ]; then
-  for file in ../*; do
-    if [ -d "$file" ] && [ -d "$file/zygisk" ] && ! [ -f "$file/disable" ]; then
-      if [ -f "$file/service.sh" ]; then
-        cd "$file"
-        log -p i -t "zygisk-sh" "Manually trigger service.sh for $file"
-        sh "$(realpath ./service.sh)" &
-        cd "$MODDIR"
-      fi
-    fi
-  done
-fi
+# A shim: the rules live in the tracer, which a manager cannot call directly because it
+# invokes boot stages by file name. One tracer is installed, for the ABI it injects.
+TRACER=${0%/*}/bin/zygisk-ptrace64
+[ -f "$TRACER" ] || TRACER=${0%/*}/bin/zygisk-ptrace32
+exec "$TRACER" stage service

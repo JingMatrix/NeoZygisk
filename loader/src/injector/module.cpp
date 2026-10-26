@@ -1,7 +1,6 @@
 #include "module.hpp"
 
 #include <android/dlext.h>
-#include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -10,14 +9,15 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <lsplt.hpp>
 
 #include "daemon.hpp"
 #include "dl.hpp"
 #include "files.hpp"
 #include "logging.hpp"
-#include "solist.hpp"
 #include "misc.hpp"
+#include "solist.hpp"
 #include "zygisk.hpp"
 
 using namespace std;
@@ -326,7 +326,7 @@ void ZygiskContext::run_modules_post() {
         if (it->tryUnload()) modules_unloaded++;
     }
 
-    if (modules.size() > 0) {
+    if (modules.size() > 0 && g_hook != nullptr) {
         LOGV("modules unloaded: %zu/%zu", modules_unloaded, modules.size());
         if (modules.size() == modules_unloaded) clean_libc_trace();
         // "zygisk-module" is the memfd name (zygiskd.rs:264); b4d31ab fixed the same
@@ -386,7 +386,7 @@ void ZygiskContext::app_specialize_post() {
     run_modules_post();
 
     if ((info_flags & PROCESS_IS_MANAGER) == PROCESS_IS_MANAGER) {
-        LOGI("current uid %d is manager!", args.app->uid);
+        LOGI("uid %d is the root manager, exporting ZYGISK_ENABLED for it", args.app->uid);
         setenv("ZYGISK_ENABLED", "1", 1);
     }
 

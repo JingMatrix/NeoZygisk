@@ -1,5 +1,8 @@
 #pragma once
 
+#include <sys/socket.h>
+#include <sys/un.h>
+
 #include <set>
 #include <string>
 #include <vector>
@@ -117,6 +120,10 @@ public:
     void request_start();
     void request_stop(std::string reason);
     void request_exit();
+
+    /// Refreshes the module snapshot and attaches to whatever is up and not yet hooked.
+    /// The result is what the caller over the control socket is answered with.
+    RearmResult request_rearm(bool ignore_disable);
     void notify_init_detached();
 
     // Public Accessors for owned components
@@ -133,11 +140,10 @@ private:
         ~SocketHandler() override;
 
     private:
-        struct [[gnu::packed]] MsgHead {
-            Command cmd;
-            int length;
-            char data[0];
-        };
+        /// Sends a rearm verdict back to the sender of the command, when it bound an
+        /// address to receive one on.
+        void answer(const struct sockaddr_un &peer, socklen_t peerlen, RearmResult result);
+
         AppMonitor &monitor_;
         std::vector<uint8_t> buf_;
         int sock_fd_ = -1;
@@ -168,7 +174,8 @@ private:
     };
 
     void set_tracing_state(TracingState state);
-    void write_abi_status_section(std::string &status_text, const Status &daemon_status);
+    void write_abi_status_section(std::string &status_text, std::string &daemon_detail,
+                                  const Status &daemon_status);
 
     // Owned Components (Declaration order must match initializer list)
     EventLoop event_loop_;
@@ -180,6 +187,8 @@ private:
     TracingState tracing_state_;
     std::string monitor_stop_reason_;
     std::string prop_path_;
-    std::string pre_section_;
-    std::string post_section_;
+    // The status readout, in the order it is rendered: the module's own metadata, then
+    // the live state, then whatever the daemon reports, then the closing description.
+    std::string metadata_section_;
+    std::string description_;
 };

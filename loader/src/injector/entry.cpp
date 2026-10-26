@@ -2,23 +2,45 @@
 
 #include "daemon.hpp"
 #include "logging.hpp"
+#include "system_server.hpp"
+#include "trace.hpp"
 #include "zygisk.hpp"
 
 using namespace std;
 
+/// Returns whether this process came out of the call with hooks installed. The tracer hands
+/// that on to the monitor, which cannot tell it from the outside: the library stays mapped
+/// whatever the daemon answers, and a second injection over it is impossible.
 extern "C" [[gnu::visibility("default")]]
-void entry(void* addr, size_t size, const char* path) {
-    LOGI("zygisk library injected, version %s", ZKSU_VERSION);
+int entry(void* addr, size_t size, const char* path, TraceMode mode) {
+    LOGI("injector loaded in %s mode, version %s", name_of(mode), ZKSU_VERSION);
 
     zygiskd::Init(path);
 
     if (!zygiskd::PingHeartbeat()) {
-        LOGE("zygisk daemon is not running");
-        return;
+        LOGE("no daemon answered, so this process is left with no hooks at all");
+        return 0;
     }
 
-    hook_entry(addr, size);
-    send_seccomp_event_if_needed();
+    switch (mode) {
+    case TraceMode::SYSTEM_SERVER:
+        // No zygote hooks here: system_server never forks an app, and it is already
+        // specialized, so the lifecycle is driven directly instead.
+        trigger_system_server_hooks();
+        break;
+    case TraceMode::STANDALONE:
+        hook_entry(addr, size);
+        send_seccomp_event_if_needed();
+        // A zygote caught at its entry point runs these itself on the way up. One that
+        // was already running is past that point, so drive them here.
+        trigger_zygote_hooks();
+        break;
+    default:
+        hook_entry(addr, size);
+        send_seccomp_event_if_needed();
+        break;
+    }
+    return 1;
 }
 
 /**
@@ -50,7 +72,7 @@ extern "C" int __cxa_atexit(void (*func)(void*), void* arg, void* dso) {
 
     } else {
         // dladdr() failed. We can still log the raw pointer.
-        LOGV("atexit registration BLOCKED for function at %p without library information).", func);
+        LOGV("atexit registration BLOCKED for function at %p, no library information", func);
     }
 
     return 0;

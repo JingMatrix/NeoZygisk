@@ -14,6 +14,10 @@
 
 constexpr auto kCPSocketName = "/" LP_SELECT("cp32", "cp64") ".sock";
 
+// The zygote this build injects. A device gets one ABI's tracer and injector, the 64-bit
+// ones wherever they run at all, so this is the only zygote it can attach.
+constexpr auto kZygoteProgram = "/system/bin/app_process" LP_SELECT("32", "64");
+
 class UniqueFd {
     using Fd = int;
 
@@ -65,6 +69,7 @@ enum class SocketAction {
     GetModuleDir,
     ZygoteRestart,
     SystemServerStarted,
+    RefreshModules,
 };
 
 enum class MountNamespace { Clean, Root };
@@ -92,4 +97,9 @@ int GetModuleDir(size_t index);
 void ZygoteRestart();
 
 void SystemServerStarted();
+
+/// Asks the daemon to rebuild its module snapshot from disk, and waits for the result.
+/// Synchronous on purpose: the rearm path must not inject against a stale snapshot. The
+/// flag travels with the request, so it holds for this daemon's later rescans as well.
+bool RefreshModules(bool ignore_disable);
 }  // namespace zygiskd

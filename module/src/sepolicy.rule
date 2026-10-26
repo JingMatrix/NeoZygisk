@@ -1,6 +1,15 @@
+# No semicolon may appear anywhere in this file, comments included: ksud splits it on both
+# newlines and semicolons, and the tail of a split comment no longer starts with a hash,
+# so it is parsed as a rule and aborts the install.
+
 type zygisk_file file_type
 typeattribute zygisk_file mlstrustedobject
 allow zygote zygisk_file sock_file {read write}
+
+# A late-injected system_server pings the daemon as u:r:system_server:s0, so it needs the
+# socket file and the listening socket, which the daemon creates as u:r:zygote:s0.
+allow system_server zygisk_file sock_file {read write}
+allow system_server zygote unix_stream_socket connectto
 
 allow zygote magisk lnk_file read
 allow zygote unlabeled file {read open}
@@ -17,3 +26,13 @@ allow zygote magisk memfd_file {getattr read write map execute}
 allow zygote su memfd_file {getattr read write map execute}
 allow zygote proc file *
 allow zygote nsfs file *
+
+# Module libraries arrive as memfds over the control socket, labelled u:object_r:tmpfs:s0 on
+# older kernels and memfd_file after the creating domain on newer ones. Without these the
+# kernel drops the descriptors and a late-injected server_specialize sees no modules.
+allow system_server tmpfs file {getattr read write map execute}
+allow system_server magisk memfd_file {getattr read write map execute}
+allow system_server su memfd_file {getattr read write map execute}
+
+# The injected library's JIT cache is labelled after its creator: system_server_tmpfs here.
+allow system_server system_server_tmpfs file {getattr read write map execute}

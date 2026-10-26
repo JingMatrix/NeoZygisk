@@ -78,7 +78,7 @@ void align_stack(struct user_regs_struct &regs, long preserve = 0);
 uintptr_t push_string(int pid, struct user_regs_struct &regs, const char *str);
 
 uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr,
-                      uintptr_t return_addr, std::vector<long> &args);
+                      uintptr_t return_addr, std::vector<long> &args, bool *ok = nullptr);
 
 int fork_dont_care();
 
@@ -115,3 +115,50 @@ inline const char *sigabbrev_np(int sig) {
 
 std::string get_program(int pid);
 void *find_module_return_addr(const std::vector<MapInfo> &info, std::string_view suffix);
+
+/// The module directory, resolved once from /proc/self/exe. Every path the monitor and the
+/// tracer need is built from this, not from the working directory, which a reinstall
+/// invalidates and a root shell never sets sensibly.
+const std::string &get_module_dir();
+
+/// Reads /proc/<pid>/comm, the thread name, without the trailing newline. Not argv[0]: a
+/// zygote reports "main" here, while system_server does set its name. Empty when unreadable.
+std::string get_comm(pid_t pid);
+
+/// Reads the parent pid from /proc/<pid>/status, or -1 when unreadable.
+pid_t get_ppid(pid_t pid);
+
+/// Reads /proc/<pid>/cmdline as the argument vector it stores. Unlike comm, this sees the
+/// "zygote64" a zygote writes over its own argv[0]. Empty when unreadable.
+std::vector<std::string> read_cmdline(pid_t pid);
+
+/// Finds every live process whose /proc/<pid>/exe resolves to this path, the same key the
+/// monitor's spawn path matches on, so the two agree. Callers separate zygotes from
+/// system_server by comm, since it is a forked zygote with the same executable.
+std::vector<pid_t> find_processes_by_exe(std::string_view exe);
+
+/// Reads the single-letter state from /proc/<pid>/status: 'T' for a process stopped by a
+/// signal, 't' for one in a ptrace stop. Zero when unreadable.
+char get_process_state(pid_t pid);
+
+/// Reads the pid tracing this process from /proc/<pid>/status: its pid, 0 when untraced, or
+/// -1 when unreadable. Only one process may trace init, which makes this the answer to "is a
+/// monitor still attached": its socket closes before it dies, so a replacement waits out the
+/// attachment.
+pid_t get_tracer_pid(pid_t pid);
+
+/// Tests whether argv says this is a zygote, in either of the two shapes it has. The
+/// executable and init parentage are not enough: anything a boot script backgrounds is
+/// reparented to init, and a framework's daemon is typically app_process under a
+/// --nice-name. argv settles it -- init passes --zygote, and argv[0] becomes "zygote64" --
+/// while comm stays "main" through both.
+bool has_zygote_cmdline(pid_t pid);
+
+/// Finds every running zygote of this build's own ABI, the only one it can inject.
+std::vector<pid_t> find_zygotes();
+
+/// Tests whether a process already has a library whose path contains this suffix mapped.
+/// How the rearm path tells a bare process from an injected one, read from the tracee
+/// itself rather than from monitor state a previous instance would not have shared. It says
+/// nothing about hooks: only the daemon's heartbeat does.
+bool has_library_mapped(pid_t pid, std::string_view suffix);

@@ -26,7 +26,8 @@ use std::{
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
     process::Command,
-    sync::{Arc, Mutex, OnceLock},
+    sync::atomic::{AtomicBool, Ordering},
+    sync::{Arc, Mutex, OnceLock, RwLock},
     thread,
 };
 
@@ -40,8 +41,56 @@ struct Module {
 
 /// The shared context for the daemon, containing all loaded modules and a mount namespace manager
 struct AppContext {
-    modules: Vec<Module>,
+    /// The live module snapshot, replaced wholesale by `RefreshModules`.
+    ///
+    /// The daemon outlives module promotions and whole root sessions, so the set it serves
+    /// has to be replaceable: an `Arc` per request keeps in-flight work on the set it
+    /// started with, and retiring a snapshot drops its companions with it.
+    modules: RwLock<Arc<Vec<Module>>>,
+    /// Whether a module's `disable` flag counts. Carried by the `RefreshModules` request
+    /// that asked for it, and kept for the rescans the daemon does on its own.
+    ignore_disable: AtomicBool,
     mount_manager: Arc<MountNamespaceManager>,
+}
+
+impl AppContext {
+    /// Takes a reference to the current snapshot. Held only long enough to clone the
+    /// `Arc`, so a refresh is never blocked by a slow reader.
+    fn modules(&self) -> Arc<Vec<Module>> {
+        Arc::clone(&self.modules.read().unwrap())
+    }
+
+    /// Rescans the module directory on the terms the request carries, which hold for the
+    /// rescans that follow until another request changes them.
+    fn refresh_modules(&self, ignore_disable: bool) -> Result<usize> {
+        self.ignore_disable.store(ignore_disable, Ordering::Relaxed);
+        self.rescan_modules()
+    }
+
+    /// Rescans for a refresh the daemon decides on by itself, such as a zygote restart.
+    ///
+    /// The new snapshot is built completely before anything is published, so a scan that
+    /// fails leaves the daemon serving the previous set rather than an empty or partial
+    /// one. Returns the number of modules now live.
+    fn rescan_modules(&self) -> Result<usize> {
+        let ignore_disable = self.ignore_disable.load(Ordering::Relaxed);
+        let modules =
+            load_modules(ignore_disable).context("Failed to rescan the module directory")?;
+        let count = modules.len();
+        let names: Vec<_> = modules.iter().map(|m| m.name.clone()).collect();
+        // The status readout is written from what the daemon reports, so a refreshed set
+        // has to be reported again or the module list the user sees keeps naming the one
+        // the daemon served at startup.
+        if let Err(e) = send_startup_info(&modules) {
+            warn!("Failed to report the refreshed module list: {:?}", e);
+        }
+        // The previous snapshot is dropped once the last in-flight reader releases it,
+        // which closes its library memfds and its companion sockets. A companion whose
+        // socket is closed has no remaining caller, so it exits on its own.
+        *self.modules.write().unwrap() = Arc::new(modules);
+        info!("Module snapshot refreshed: {} module(s) {:?}", count, names);
+        Ok(count)
+    }
 }
 
 // Global paths, initialized once at startup.
@@ -51,15 +100,22 @@ static DAEMON_SOCKET_PATH: OnceLock<String> = OnceLock::new();
 
 /// The main function for the zygiskd daemon.
 pub fn main(tmp_path: Option<&str>) -> Result<()> {
-    info!("Welcome to NeoZygisk ({}) !", ZKSU_VERSION);
+    info!("daemon starting, NeoZygisk {}", ZKSU_VERSION);
 
     initialize_globals(tmp_path)?;
-    let modules = load_modules()?;
+    // Lenient at startup where a refresh is strict: the daemon serves the heartbeat, the
+    // process flags and the mount namespaces too, and all of those are worth having even
+    // when the module set could not be read. A later `RefreshModules` can still pick it up.
+    let modules = load_modules(false).unwrap_or_else(|e| {
+        warn!("Starting with no modules: {:?}", e);
+        Vec::new()
+    });
     send_startup_info(&modules)?;
 
     let mount_manager = Arc::new(MountNamespaceManager::new());
     let context = Arc::new(AppContext {
-        modules,
+        modules: RwLock::new(Arc::new(modules)),
+        ignore_disable: AtomicBool::new(false),
         mount_manager,
     });
     let listener = create_daemon_socket()?;
@@ -80,6 +136,41 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
 
 /// Handles a single incoming connection from Zygisk.
 fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result<()> {
+    // Only root and system may talk to the daemon: zygote (uid 0) throughout injection and
+    // the pre-specialization window, a late-injected system_server (uid 1000), and the root
+    // tracer. SO_PEERCRED is recorded by the kernel at connect() time and cannot be spoofed.
+    //
+    // This is the same boundary `sepolicy.rule` draws -- it grants the socket to the zygote
+    // and system_server domains and to nothing else -- and the same one the Zygisk API
+    // documents: `connectCompanion()` and `getModuleDir()` work from the pre[XXX]Specialize
+    // callbacks and not afterwards, "due to SELinux and UID". A module calling either once
+    // its process has dropped to the app uid is refused here as well, and sees the -1 the
+    // API already defines for a connection that could not be made. Nothing legitimate is
+    // lost: an app reaches its companion over an fd handed to it before the drop, which
+    // never re-enters this accept path.
+    const AID_ROOT: u32 = 0;
+    const AID_SYSTEM: u32 = 1000;
+    let peer_pid = match rustix::net::sockopt::socket_peercred(&stream) {
+        Ok(cred) => {
+            let uid = cred.uid.as_raw();
+            if uid != AID_ROOT && uid != AID_SYSTEM {
+                warn!(
+                    "Rejecting daemon connection from untrusted peer: {:?}",
+                    cred
+                );
+                return Ok(());
+            }
+            cred.pid.as_raw_nonzero().get()
+        }
+        Err(e) => {
+            warn!(
+                "Rejecting daemon connection: cannot read peer credentials: {}",
+                e
+            );
+            return Ok(());
+        }
+    };
+
     let action = stream.read_u8()?;
     let action = DaemonSocketAction::try_from(action)
         .with_context(|| format!("Invalid daemon action code: {}", action))?;
@@ -97,18 +188,51 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
                 .save_mount_namespace(pid, MountNamespace::Root)?;
         }
         DaemonSocketAction::PingHeartbeat => {
-            let value = constants::ZYGOTE_INJECTED;
-            utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &value.to_le_bytes())?;
+            // Name the process this answers for. The controller cannot work it out from the
+            // outside: our library stays mapped in a zygote whether or not the heartbeat
+            // ever reached a daemon, and only one of those two is hooked.
+            let mut msg = Vec::<u8>::new();
+            msg.extend_from_slice(&constants::ZYGOTE_INJECTED.to_le_bytes());
+            msg.extend_from_slice(&(peer_pid.to_le_bytes().len() as u32).to_le_bytes());
+            msg.extend_from_slice(&peer_pid.to_le_bytes());
+            utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &msg)?;
         }
         DaemonSocketAction::ZygoteRestart => {
-            info!("Zygote restarted, cleaning up companion sockets.");
-            for module in &context.modules {
+            info!("Zygote restarted, dropping companions and rescanning modules.");
+            // Drop the companions first and unconditionally: they served a framework that
+            // no longer exists, and leaving it to the snapshot swap would strand them if
+            // the rescan failed.
+            for module in context.modules().iter() {
                 module.companion.lock().unwrap().take();
+            }
+            // This is the only refresh a zygote restart gets, so a module installed while
+            // the system was up would otherwise wait for a full reboot. A bare stop and
+            // start runs no boot script at all, and `ksud soft-reboot` -- which does replay
+            // the boot stages -- stops zygote before it does, so the service stage finds no
+            // live zygote and sends no rearm.
+            //
+            // It is also the only safe point to swap the set: a module handle is an index
+            // into the list its process read at startup, and a zygote restart takes
+            // system_server and every app holding one down with it.
+            if let Err(e) = context.rescan_modules() {
+                warn!("Serving the previous module snapshot: {:?}", e);
             }
         }
         DaemonSocketAction::SystemServerStarted => {
             let value = constants::SYSTEM_SERVER_STARTED;
             utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &value.to_le_bytes())?;
+        }
+        DaemonSocketAction::RefreshModules => {
+            let ignore_disable = stream.read_u8()? != 0;
+            // Synchronous: the rearm path waits for this before injecting anything.
+            let ok = match context.refresh_modules(ignore_disable) {
+                Ok(_) => 1u8,
+                Err(e) => {
+                    warn!("Failed to refresh the module snapshot: {:?}", e);
+                    0u8
+                }
+            };
+            stream.write_u8(ok)?;
         }
         // Heavier actions are spawned into a separate thread.
         _ => {
@@ -166,7 +290,7 @@ fn initialize_globals(tmp_path: Option<&str>) -> Result<()> {
         .set(format!(
             "{}/{}",
             TMP_PATH.get().unwrap(),
-            lp_select!("/cp32.sock", "/cp64.sock")
+            lp_select!("cp32.sock", "cp64.sock")
         ))
         .unwrap();
     Ok(())
@@ -181,15 +305,17 @@ fn send_startup_info(modules: &[Module]) -> Result<()> {
         | root_impl::RootImpl::Magisk => {
             msg.extend_from_slice(&constants::DAEMON_SET_INFO.to_le_bytes());
             let module_names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+            // Indented one level, to stand as its own block in the status readout, with
+            // module names one level deeper again under their count.
             if !module_names.is_empty() {
                 format!(
-                    "\t\tRoot: {:?}\n\t\tModules ({}):\n\t\t\t{}",
+                    "\tRoot: {:?}\n\tModules ({}):\n\t\t{}",
                     root_impl::get(),
                     modules.len(),
-                    module_names.join("\n\t\t\t")
+                    module_names.join("\n\t\t")
                 )
             } else {
-                format!("\t\tRoot: {:?}", root_impl::get())
+                format!("\tRoot: {:?}", root_impl::get())
             }
         }
         _ => {
@@ -217,25 +343,38 @@ fn get_arch() -> Result<&'static str> {
 }
 
 /// Scans the module directory, loads valid modules, and creates memfds for their libraries.
-fn load_modules() -> Result<Vec<Module>> {
+fn load_modules(ignore_disable: bool) -> Result<Vec<Module>> {
     let arch = get_arch()?;
     debug!("Daemon architecture: {arch}");
+
+    if ignore_disable {
+        info!("Loading modules that are marked disabled, as requested");
+    }
 
     let mut modules = Vec::new();
     let dir = match fs::read_dir(constants::PATH_MODULES_DIR) {
         Ok(dir) => dir,
-        Err(e) => {
-            warn!("Failed to read modules directory: {}", e);
+        // No module directory at all means no modules, which is the normal state on a
+        // build with no root framework. Anything else is a failure to read a directory
+        // that does exist, and must be reported rather than passed off as an empty set:
+        // `refresh_modules` would otherwise retire every live module and call it success.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            warn!("No module directory at {}", constants::PATH_MODULES_DIR);
             return Ok(modules);
+        }
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("Failed to read {}", constants::PATH_MODULES_DIR));
         }
     };
 
     for entry in dir.flatten() {
         let name = entry.file_name().into_string().unwrap_or_default();
         let so_path = entry.path().join(format!("zygisk/{arch}.so"));
-        let disabled_flag = entry.path().join("disable");
-
-        if !so_path.exists() || disabled_flag.exists() {
+        if !so_path.exists() {
+            continue;
+        }
+        if !ignore_disable && entry.path().join("disable").exists() {
             continue;
         }
 
@@ -390,7 +529,7 @@ fn handle_update_mount_namespace(stream: &mut UnixStream, context: &AppContext) 
         stream.write_u8(1)?;
         stream.send_fd(fd)?;
     } else {
-        // FAILURE: Send Status '0'. 
+        // FAILURE: Send Status '0'.
         // Do NOT send an FD or random u32 bytes, just stop here.
         warn!("Namespace {:?} is not cached yet.", namespace_type);
         stream.write_u8(0)?;
@@ -399,17 +538,40 @@ fn handle_update_mount_namespace(stream: &mut UnixStream, context: &AppContext) 
 }
 
 fn handle_read_modules(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
-    stream.write_usize(context.modules.len())?;
-    for module in &context.modules {
+    // One snapshot for the whole reply, so the count written first always matches the
+    // number of entries that follow even if a refresh lands mid-reply.
+    let modules = context.modules();
+    stream.write_usize(modules.len())?;
+    for module in modules.iter() {
         stream.write_string(&module.name)?;
         stream.send_fd(module.lib_fd.as_raw_fd())?;
     }
     Ok(())
 }
 
+/// Resolves a client-supplied module index against a snapshot.
+///
+/// The index comes from a previous `ReadModules` reply, so a client holding one from a
+/// retired snapshot can present an index this one no longer has.
+fn module_at(modules: &Arc<Vec<Module>>, index: usize) -> Result<&Module> {
+    modules
+        .get(index)
+        .with_context(|| format!("Module index {} is out of range ({})", index, modules.len()))
+}
+
 fn handle_request_companion_socket(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
     let index = stream.read_usize()?;
-    let module = &context.modules[index];
+    let modules = context.modules();
+    let module = match module_at(&modules, index) {
+        Ok(module) => module,
+        Err(e) => {
+            warn!("{}", e);
+            // Tell the client no companion is available rather than dropping the
+            // connection, which is what it already handles.
+            stream.write_u8(0)?;
+            return Ok(());
+        }
+    };
     let mut companion = module.companion.lock().unwrap();
 
     // Check if the existing companion socket is still alive.
@@ -462,7 +624,8 @@ fn handle_request_companion_socket(stream: &mut UnixStream, context: &AppContext
 
 fn handle_get_module_dir(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
     let index = stream.read_usize()?;
-    let module = &context.modules[index];
+    let modules = context.modules();
+    let module = module_at(&modules, index)?;
     let dir_path = format!("{}/{}", constants::PATH_MODULES_DIR, module.name);
     let dir = fs::File::open(dir_path)?;
     stream.send_fd(dir.as_raw_fd())?;
