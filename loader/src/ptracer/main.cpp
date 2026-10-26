@@ -34,14 +34,9 @@ static void control_socket_addr(struct sockaddr_un &addr, socklen_t &socklen) {
     socklen = sizeof(sa_family_t) + strlen(addr.sun_path);
 }
 
-/**
- * @brief Reports whether a monitor is currently bound to the control socket.
- *
- * Connecting a datagram socket to the path succeeds only while a process holds the name,
- * and fails with ECONNREFUSED once that process is gone. This is what keeps the single-owner
- * invariant in the monitor rather than in each caller -- every entry point may simply try
- * to start one, and a redundant monitor steps aside instead of fighting over init.
- */
+// Connecting a datagram socket to the path succeeds only while a process holds the name,
+// and fails with ECONNREFUSED once that process is gone. This keeps the single-owner rule
+// in the monitor rather than in each caller: every entry point may just start one.
 bool monitor_is_running() {
     int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (sockfd == -1) return false;
@@ -59,10 +54,8 @@ bool monitor_is_running() {
 void init_monitor() {
     LOGI("monitor starting, NeoZygisk %s", ZKSU_VERSION);
 
-    // Exactly one monitor may exist: two would both seize init and race over the same
-    // control socket and status file. Checking here, before prepare_environment(), keeps
-    // a redundant monitor from rewriting the status file on its way out. Every bootstrap
-    // path can therefore just start one unconditionally.
+    // Two monitors would both seize init and race over the socket and status file.
+    // Checked before prepare_environment(), so a redundant one rewrites nothing.
     if (monitor_is_running()) {
         LOGI("another monitor already owns the control socket, exiting");
         return;
@@ -78,16 +71,14 @@ void init_monitor() {
     LOGI("exit");
 }
 
-// A caller may arrive while the monitor it depends on is still starting: on the late-load
-// path the bootstrap stage backgrounds the monitor and a later stage sends `rearm`, with
-// only the mount step in between. Retry rather than make every caller implement its own
-// wait, but keep the budget short so a genuinely absent monitor is reported promptly.
+// A caller can arrive while the monitor it depends on is still starting: the late-load
+// stage backgrounds it and the next stage sends `rearm`. Short budget, so a monitor that
+// is genuinely absent is reported promptly.
 static constexpr int kSendRetries = 10;
 static constexpr useconds_t kSendRetryDelayUs = 200 * 1000;
 
-// A rearm injects whatever is running and waits for each injection, and a heartbeat that
-// goes unanswered costs about five seconds of that. The answer is worth waiting for: it
-// carries what the rearm achieved, which nothing outside the monitor can work out.
+// A rearm waits for each injection it makes, and an unanswered heartbeat costs five
+// seconds of that. Worth waiting for: nothing outside the monitor knows what it achieved.
 static constexpr int kAnswerTimeoutSec = 30;
 
 /// Sends one command on \p sockfd, retrying while the monitor is still coming up. Returns
@@ -117,8 +108,7 @@ static bool send_to_monitor(int sockfd, Command cmd) {
     return false;
 }
 
-// The entry point for the command-line control utility. Returns false if no monitor could
-// be reached within the retry budget.
+// Returns false if no monitor could be reached within the retry budget.
 bool send_control_command(Command cmd) {
     int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (sockfd == -1) {
@@ -137,9 +127,8 @@ RearmResult send_rearm_command() {
         return RearmResult::Failed;
     }
 
-    // Bound with an empty path, which has Linux assign an abstract name of its own. Without
-    // a name of some kind this socket has no address for the monitor to answer at, and the
-    // verdict would be dropped rather than delivered.
+    // An empty path has Linux assign an abstract name of its own. Unnamed, this socket has
+    // no address for the monitor to answer at and the verdict would be dropped.
     struct sockaddr_un self{.sun_family = AF_UNIX, .sun_path = {0}};
     struct timeval timeout{.tv_sec = kAnswerTimeoutSec, .tv_usec = 0};
     auto result = RearmResult::Failed;
@@ -178,10 +167,7 @@ static int handle_version();
 // the handler runs asynchronously with the assignments below.
 static volatile sig_atomic_t g_traced_pid = 0;
 
-/**
- * @brief Signal handler to safely detach and resume Zygote if the user
- *        interrupts the standalone tracer (e.g., Ctrl+C).
- */
+// Detach and resume the target if the tracer is interrupted, Ctrl+C above all.
 static void handle_interrupt(int sig) {
     if (g_traced_pid > 0) {
         printf("\n[!] received %s, safely detaching from pid %d to prevent crash\n",
@@ -193,18 +179,9 @@ static void handle_interrupt(int sig) {
     _exit(EXIT_FAILURE);
 }
 
-/**
- * @brief Main entry point for the NeoZygisk command-line interface.
- *
- * This function acts as a dispatcher, parsing the first command-line argument
- * to determine the desired mode of operation (e.g., monitor, trace, ctl)
- * and delegating the work to a corresponding handler function.
- */
 int main(int argc, char **argv) {
-    // Whoever reads this reads it through a pipe -- a manager collecting a stage's output,
-    // or adb -- where the default block buffering holds stdout back until exit and lands it
-    // after everything written to stderr. Line buffering keeps the two in the order they
-    // were written.
+    // Read through a pipe, by a manager collecting a stage's output or by adb, where block
+    // buffering would hold stdout back until exit and land it after everything on stderr.
     setvbuf(stdout, nullptr, _IOLBF, 0);
 
     // This initialization is for the daemon's internal logic, not for CLI output.
@@ -239,11 +216,7 @@ int main(int argc, char **argv) {
     }
 }
 
-/**
- * @brief Prints the tool's version and usage information to standard error.
- *        Usage is typically printed in response to an error.
- * @param tool_name The name of the executable, typically argv[0].
- */
+// To stderr, since it usually answers a mistake on the command line.
 static void print_usage(const char *tool_name) {
     fprintf(stderr,
             "NeoZygisk Tracer %s\n"
@@ -272,23 +245,12 @@ static void print_usage(const char *tool_name) {
             ZKSU_VERSION, tool_name);
 }
 
-/**
- * @brief Handles the 'monitor' command.
- *
- * Initializes the Zygote monitoring daemon.
- */
 static int handle_monitor() {
     printf("starting monitor mode...\n");
     init_monitor();
-    // This function is long-running and typically won't return here.
     return EXIT_SUCCESS;
 }
 
-/**
- * @brief Handles the 'trace' command.
- *
- * Parses the PID and optional flags, then initiates the ptrace injection.
- */
 static int handle_trace(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "error: trace command requires a PID\n");
@@ -296,7 +258,6 @@ static int handle_trace(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    // --- Robust PID Parsing ---
     char *end_ptr;
     errno = 0;  // Reset errno before the call
     long pid_val = strtol(argv[2], &end_ptr, 10);
@@ -309,7 +270,6 @@ static int handle_trace(int argc, char **argv) {
     pid_t pid = static_cast<pid_t>(pid_val);
     printf("preparing to trace pid %d\n", pid);
 
-    // --- Flag Parsing ---
     TraceMode mode = TraceMode::UNKNOWN;
 
     if (argc >= 4) {
@@ -327,41 +287,32 @@ static int handle_trace(int argc, char **argv) {
         }
     }
 
-    // --- Signal Handling for safe exit ---
     g_traced_pid = pid;
     signal(SIGINT, handle_interrupt);
     signal(SIGTERM, handle_interrupt);
 
-    // --- Flag Execution ---
     const char *target = "zygote";
     if (mode == TraceMode::SPAWN) {
         printf("reporting zygote restart...\n");
         zygiskd::ZygoteRestart();
     } else if (mode == TraceMode::STANDALONE) {
         printf("standalone mode: injecting into the running zygote...\n");
-        // No daemon is started here. Every mode now runs under a monitor that already owns
-        // the control socket and zygiskd, and `ctl rearm` is what drives this mode, so the
-        // tracer is a plain injector in all three cases. Running this by hand therefore
-        // needs a monitor first -- which is exactly what `ctl rearm` asks for.
+        // No daemon is started here: every mode runs under a monitor that owns the socket
+        // and zygiskd, which leaves the tracer a plain injector. Needs one running first.
     } else if (mode == TraceMode::SYSTEM_SERVER) {
         target = "system_server";
         printf("injecting into system_server\n");
     }
 
-    // Note on the heartbeat race: the tracee may reach zygiskd::PingHeartbeat() before the
-    // monitor's zygiskd has bound the control socket. This is covered by the retry budget
-    // in zygiskd::Connect() -- PingHeartbeat uses Connect(5), i.e. four one-second retries
-    // -- which comfortably outlasts a fork+exec of zygiskd. The retries run inside the
-    // ptrace-stopped tracee, so the only cost of losing the race is a short stall.
+    // The tracee can reach PingHeartbeat() before the monitor's zygiskd has bound its
+    // socket. Connect(5)'s four one-second retries outlast a fork+exec of it, and they run
+    // inside the ptrace-stopped tracee, so losing that race costs only a stall.
     bool hooked = false;
     if (!trace_target(pid, mode, &hooked)) {
-        // Resume the target uninjected rather than killing it, in every mode. A SPAWN
-        // target is parked in SIGSTOP by the monitor, so it must be released or the boot
-        // hangs; killing it instead feeds a zygote restart loop, which Android's
-        // RescueParty answers by rebooting into the "wipe data" prompt. One boot without
-        // modules is a far better outcome. The redundant kill() covers a trace_target()
-        // that failed before it ever attached, where the ptrace request cannot deliver the
-        // signal.
+        // Resume the target uninjected rather than killing it, in every mode: a SPAWN
+        // target is parked in SIGSTOP and hangs the boot unless released, and killing it
+        // feeds a zygote restart loop, which RescueParty answers with the wipe-data
+        // prompt. The kill() covers a failure that came before the attach.
         fprintf(stderr, "error: failed to trace %s, resuming process %d uninjected\n", target, pid);
         ptrace(PTRACE_DETACH, pid, 0, SIGCONT);
         kill(pid, SIGCONT);
@@ -383,11 +334,6 @@ static int handle_trace(int argc, char **argv) {
     return TRACE_HOOKED;
 }
 
-/**
- * @brief Handles the 'ctl' (control) command.
- *
- * Sends a control command to a running daemon instance.
- */
 static int handle_ctl(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "error: ctl command requires an action (start|stop|exit|rearm)\n");
@@ -431,12 +377,8 @@ static int handle_ctl(int argc, char **argv) {
     return EXIT_SUCCESS;
 }
 
-/**
- * @brief Handles the 'stage' command.
- *
- * Runs one boot stage. The module ships a shell file per stage name because that is how
- * managers invoke them; each one forwards here, so the rules live in one place.
- */
+// The module ships a shell file per stage name, because that is how managers invoke them;
+// each forwards here, so the rules live in one place.
 static int handle_stage(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "error: stage command requires a name\n");
@@ -481,11 +423,6 @@ static int handle_stage(int argc, char **argv) {
     return run_stage(stage, options);
 }
 
-/**
- * @brief Handles the 'version' command.
- *
- * Prints the tool's version number to standard output.
- */
 static int handle_version() {
     printf("NeoZygisk Tracer %s\n", ZKSU_VERSION);
     return EXIT_SUCCESS;

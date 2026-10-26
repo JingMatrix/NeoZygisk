@@ -9,7 +9,6 @@
 #include "main.hpp"
 #include "types.hpp"
 
-// Forward declaration to break circular dependency
 class AppMonitor;
 
 /**
@@ -26,20 +25,17 @@ public:
 
     ZygoteAbiManager(AppMonitor& monitor, bool is_64bit);
 
-    // Public Interface for event handling
     bool handle_daemon_exit_if_match(int pid, int process_status);
     const char* check_and_prepare_injection();
 
-    /// Live-attach to this ABI's zygote and to system_server if they are already running
-    /// and not yet hooked, and report what came of it. Each attach is waited for, so the
-    /// answer covers the heartbeat as well as the injection.
+    /// Live-attach to this ABI's zygote and to system_server if they are up and not yet
+    /// hooked. Each attach is waited for, so the answer covers the heartbeat as well.
     RearmResult rearm();
 
-    // Public methods for state modification
     const Status& get_status() const;
 
-    /// Records that \p pid came back from the daemon's heartbeat, which is the only proof
-    /// that a process carries working hooks. Reached from the daemon's notification.
+    /// Records that \p pid answered the daemon's heartbeat, the only proof that a process
+    /// carries working hooks.
     void notify_injected(pid_t pid);
     void set_daemon_info(std::string_view info);
     void set_daemon_crashed(std::string_view error);
@@ -50,31 +46,24 @@ public:
 private:
     bool is_in_crash_loop();
 
-    /// Starts this ABI's daemon if no live one is recorded. \p started, when given, reports
-    /// whether this call forked one, which tells a caller that the daemon is still coming up
-    /// and that its module snapshot is new.
+    /// Starts this ABI's daemon if no live one is recorded. \p started reports whether this
+    /// call forked one, whose module snapshot is new and needs no refresh.
     bool ensure_daemon_created(bool* started = nullptr);
 
-    /// Runs `tracer trace <pid> <mode_flag>` for one already-running process and waits for
-    /// it. Returns whether the injector reported hooks: the library stays mapped either way,
-    /// so a caller that treats a bare injection as success would never notice the
-    /// difference until modules failed to load.
+    /// Runs `tracer trace <pid> <mode_flag>` for one running process and waits for it.
+    /// Returns whether the injector reported hooks; the library stays mapped either way.
     bool attach_running(pid_t pid, const char* mode_flag, const char* what);
 
     Status status_;
     StartCounter counter;
 
-    /// The processes whose hooks the current daemon confirmed. Keyed by pid because that is
-    /// what distinguishes a hooked zygote from one that merely has the library mapped, and
-    /// dropped wholesale when a new daemon starts: a heartbeat answered by a daemon that is
-    /// gone proves nothing about the session that replaced it.
+    /// The processes whose hooks the current daemon confirmed, which is what tells a hooked
+    /// zygote from one that merely has the library mapped. Dropped when a new daemon starts.
     std::set<pid_t> hooked_;
 
-    /// Absolute paths, resolved once from /proc/self/exe. Relative ones would be read
-    /// against a working directory that does not survive a reinstall, which is routine under
-    /// a temp root. A hot install renames the live module directory into ksud's trash rather
-    /// than deleting it, so the failure is not ENOENT but worse: every exec would keep
-    /// succeeding and keep running the previous build, until the next boot clears the trash.
+    /// Absolute paths, resolved once from /proc/self/exe. A hot install renames the live
+    /// module directory into ksud's trash rather than deleting it, so a relative path would
+    /// keep resolving and keep running the previous build until the next boot.
     std::string tracer_path_;
     std::string daemon_path_;
     AppMonitor& monitor_;

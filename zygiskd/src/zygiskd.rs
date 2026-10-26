@@ -42,10 +42,9 @@ struct Module {
 struct AppContext {
     /// The live module snapshot, replaced wholesale by `RefreshModules`.
     ///
-    /// Under a temp root the daemon outlives module promotions, hot installs and whole
-    /// root sessions, so the set it serves has to be replaceable. Handing each request an
-    /// `Arc` of the snapshot keeps in-flight work on the set it started with, and retiring
-    /// a snapshot drops its companions with it.
+    /// The daemon outlives module promotions and whole root sessions, so the set it serves
+    /// has to be replaceable: an `Arc` per request keeps in-flight work on the set it
+    /// started with, and retiring a snapshot drops its companions with it.
     modules: RwLock<Arc<Vec<Module>>>,
     mount_manager: Arc<MountNamespaceManager>,
 }

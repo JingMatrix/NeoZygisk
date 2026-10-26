@@ -112,9 +112,8 @@ void AppMonitor::update_status() {
     std::string daemon_detail;
     write_abi_status_section(status_text, daemon_detail, zygote_.get_status());
 
-    // Assemble as blocks separated by one blank line, so the layout follows what the
-    // information is rather than the order module.prop happens to list its keys. An
-    // absent block drops out instead of leaving a run of blank lines behind.
+    // Blocks separated by one blank line, so the layout follows what the information is
+    // rather than module.prop's key order. An absent block drops out entirely.
     std::stringstream ss;
     for (const auto &block : {metadata_section_, status_text, daemon_detail, description_}) {
         auto trimmed = std::string_view(block);
@@ -133,17 +132,15 @@ bool AppMonitor::prepare_environment() {
     prop_path_ = zygiskd::GetTmpPath() + "/module.prop";
     close(open(prop_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644));
     // From the module directory, never the working directory: the late-load entry point is
-    // a root shell, whose working directory is wherever the user happened to be, and a
-    // monitor that cannot read this gives up before arming anything.
+    // a root shell, whose working directory is wherever the user happened to be.
     auto module_prop = get_module_dir() + "/module.prop";
     auto orig_prop = xopen_file(module_prop.c_str(), "r");
     if (orig_prop == nullptr) {
         PLOGE("open %s", module_prop.c_str());
         return false;
     }
-    // module.prop holds two things worth showing: the module's metadata, which belongs
-    // together in one block whatever order the file lists it in, and the description,
-    // which reads as the closing line of the readout.
+    // Two things worth showing: the metadata, as one block whatever order the file lists
+    // it in, and the description, which closes the readout.
     file_readline(false, orig_prop.get(), [&](std::string_view line) -> bool {
         // A release feed URL is of no use in a status readout.
         if (line.starts_with("updateJson=")) return true;
@@ -161,13 +158,10 @@ bool AppMonitor::prepare_environment() {
 
 void AppMonitor::run() {
     event_loop_.Init();
-    // A handler that failed to initialise has no usable fd, so registering it would leave
-    // the monitor running blind: the control socket would accept nothing and `ctl` would
-    // appear to succeed while the monitor never hears it. Refuse to start instead.
-    // The ptrace handler goes first because it is the one that can lose: seizing init
-    // fails for whoever comes second. Taking the control socket is unconditional and
-    // unlinks whatever holds the name, so doing it before that is settled would leave a
-    // monitor that then exits having unbound the socket of the one still tracing.
+    // A handler with no usable fd would leave the monitor blind: `ctl` would appear to
+    // succeed while nothing ever heard it. The ptrace handler goes first because it is the
+    // one that can lose -- seizing init fails for whoever comes second -- while taking the
+    // socket unlinks whatever holds the name, which must not happen before that is settled.
     if (!ptrace_handler_.Init()) {
         LOGE("failed to initialise the ptrace handler, exiting...");
         return;
@@ -244,9 +238,8 @@ AppMonitor::SocketHandler::~SocketHandler() {
 
 void AppMonitor::SocketHandler::answer(const struct sockaddr_un &peer, socklen_t peerlen,
                                        RearmResult result) {
-    // An unbound sender has no address to be answered at, which is the normal case: the
-    // daemon's notifications want no reply, and neither does `ctl` for anything but a
-    // rearm. Only a caller that bound a name gets one.
+    // An unbound sender has no address to answer at, which is the normal case: only a
+    // caller that bound a name wants a reply.
     if (peerlen <= static_cast<socklen_t>(sizeof(sa_family_t))) return;
 
     auto byte = static_cast<uint8_t>(result);
@@ -267,10 +260,9 @@ bool AppMonitor::SocketHandler::Init() {
     };
     sprintf(addr.sun_path, "%s/%s", zygiskd::GetTmpPath().c_str(), AppMonitor::SOCKET_NAME);
     socklen_t socklen = sizeof(sa_family_t) + strlen(addr.sun_path);
-    // A filesystem socket outlives the process that bound it, and the work directory
-    // outlives a root session, so the name can still be held by a monitor that is gone.
-    // Only one monitor may own it, and a live owner is kept out by the caller, which
-    // starts a monitor only when none answers, so an unbound name here is ours to claim.
+    // A filesystem socket outlives whoever bound it, and the work directory outlives a
+    // root session, so this name can still be held by a monitor that is gone. A live owner
+    // is kept out by the caller, so an unbound name here is ours to claim.
     if (unlink(addr.sun_path) == -1 && errno != ENOENT) {
         PLOGE("unlink stale control socket %s", addr.sun_path);
     }

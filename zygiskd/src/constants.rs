@@ -28,11 +28,9 @@ pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Trace;
 #[cfg(not(debug_assertions))]
 pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Info;
 
-/// The directory where Zygisk modules are stored. The same path under APatch, KernelSU
-/// and Magisk, and already assumed absolute elsewhere (see `clean_mount_namespace`).
-///
-/// Named absolutely rather than resolved against the working directory, which a reinstall
-/// or hot install invalidates by renaming the live module directory away.
+/// Where Zygisk modules live, the same path under APatch, KernelSU and Magisk. Absolute
+/// rather than resolved against the working directory, which a reinstall invalidates by
+/// renaming the live module directory away.
 pub const PATH_MODULES_DIR: &str = "/data/adb/modules";
 
 // --- IPC Constants ---

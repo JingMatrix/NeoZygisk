@@ -118,16 +118,13 @@ void *find_module_return_addr(const std::vector<MapInfo> &info, std::string_view
 
 /// \brief Returns the module directory, resolved once from /proc/self/exe.
 ///
-/// Every path the monitor and the tracer need is built from this rather than from the
-/// working directory, which a reinstall or hot install invalidates and which the late-load
-/// entry point -- a root shell -- never sets at all.
+/// Every path the monitor and the tracer need is built from this, not from the working
+/// directory, which a reinstall invalidates and a root shell never sets sensibly.
 const std::string &get_module_dir();
 
-/// \brief Reads /proc/<pid>/comm, without the trailing newline.
+/// \brief Reads /proc/<pid>/comm, the thread name, without the trailing newline.
 ///
-/// Note this is the thread name, not argv[0]. A zygote reports "main" here, because it
-/// rewrites its cmdline and never calls prctl(PR_SET_NAME) -- which is why `pidof zygote64`
-/// finds it but a comm comparison does not. system_server does set its name.
+/// Not argv[0]: a zygote reports "main" here, while system_server does set its name.
 /// \return The name, or an empty string if it could not be read.
 std::string get_comm(pid_t pid);
 
@@ -137,41 +134,37 @@ pid_t get_ppid(pid_t pid);
 
 /// \brief Reads /proc/<pid>/cmdline as the argument vector it stores.
 ///
-/// This is argv, not the thread name, so it does see the "zygote64" a zygote writes over
-/// its own argv[0] -- the name `pidof` matches and the one comm never carries.
+/// Unlike comm, this sees the "zygote64" a zygote writes over its own argv[0].
 /// \return The arguments, or an empty vector if the file could not be read.
 std::vector<std::string> read_cmdline(pid_t pid);
 
 /// \brief Finds every live process whose /proc/<pid>/exe resolves to \p exe.
 ///
-/// The executable is the same key the monitor's spawn path matches on, so using it here
-/// keeps the two paths in agreement -- notably it finds every zygote of this ABI, not just
-/// the one named "zygote64". Callers separate zygotes from system_server by comm, since
-/// system_server is a forked zygote and shares its executable.
+/// The same key the monitor's spawn path matches on, so the two agree. Callers separate
+/// zygotes from system_server by comm, since it is a forked zygote with the same
+/// executable.
 std::vector<pid_t> find_processes_by_exe(std::string_view exe);
 
 /// \brief Reads the pid tracing \p pid from /proc/<pid>/status.
 ///
-/// Only one process may trace init, which is what makes this the answer to "is a monitor
-/// still attached": its control socket closes before the process dies, so a replacement has
-/// to wait out the ptrace attachment rather than the socket.
+/// Only one process may trace init, which makes this the answer to "is a monitor still
+/// attached": its socket closes before it dies, so a replacement waits out the attachment.
 /// \return The tracer's pid, 0 when untraced, or -1 if it could not be read.
 pid_t get_tracer_pid(pid_t pid);
 
 /// \brief Tests whether argv says \p pid is a zygote, in either of the two shapes it has.
 ///
-/// The executable and init parentage together are not enough: anything a boot script
-/// backgrounds is reparented to init, and a root framework's daemon is typically
-/// app_process under a --nice-name of its own. argv settles it, since init launches a
-/// zygote with --zygote and it later overwrites argv[0] with "zygote64". comm is no help,
-/// staying "main" through both.
+/// The executable and init parentage are not enough: anything a boot script backgrounds is
+/// reparented to init, and a framework's daemon is typically app_process under a
+/// --nice-name. argv settles it -- init passes --zygote, and argv[0] becomes "zygote64" --
+/// while comm stays "main" through both.
 bool has_zygote_cmdline(pid_t pid);
 
 /// \brief Finds every running zygote of this build's own ABI, the only one it can inject.
 std::vector<pid_t> find_zygotes();
 
 /// \brief Tests whether \p pid already has a library whose path contains \p suffix mapped.
-/// This is how the rearm path recognises an already-injected process: it reads the
-/// tracee's own mappings rather than trusting monitor-side state, which a previous
-/// monitor instance would not have shared.
+/// How the rearm path tells a bare process from an injected one, read from the tracee
+/// itself rather than from monitor state a previous instance would not have shared. It says
+/// nothing about hooks: only the daemon's heartbeat does.
 bool has_library_mapped(pid_t pid, std::string_view suffix);

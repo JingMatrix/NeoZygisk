@@ -29,13 +29,11 @@ constexpr const char *kSocketContext = "u:object_r:zygisk_file:s0";
 constexpr const char *kEnforcePath = "/sys/fs/selinux/enforce";
 constexpr const char *kContextPath = "/sys/fs/selinux/context";
 
-// The stage being run, so that every line says where it came from: a late load triggers
-// three of these stages in turn, and the log is unreadable without it.
+// The stage every line is tagged with: a late load runs three of them in turn.
 const char *g_stage = "stage";
 
-// Everything a stage reports goes to stdout, where whoever triggered it is looking, and to
-// logcat with the rest of NeoZygisk. The three differ only in how logcat files them; on
-// stdout a warning and an error read the same.
+// A stage reports to stdout, where whoever triggered it is looking, and to logcat. The
+// three differ only in the logcat level; on stdout a warning and an error read the same.
 #define SAY(fmt, ...)                                                                              \
     do {                                                                                           \
         printf("- %s: " fmt "\n", g_stage __VA_OPT__(, ) __VA_ARGS__);                             \
@@ -88,10 +86,8 @@ bool on_path(const char *name) {
     }
 }
 
-/// How each root framework announces itself to a stage: ksud exports KSU and apd exports
-/// APATCH, while Magisk exports nothing and has to be found. PATH alone would not find it,
-/// since Magisk puts its binary there for the boot stages it runs and not for a stage
-/// reached any other way.
+/// ksud exports KSU and apd exports APATCH. Magisk exports nothing and puts its binary on
+/// PATH only for the stages it runs itself, so a stage reached any other way has to look.
 RootImpl root_impl() {
     if (getenv("KSU") != nullptr) return RootImpl::KernelSu;
     if (getenv("APATCH") != nullptr) return RootImpl::APatch;
@@ -101,9 +97,8 @@ RootImpl root_impl() {
     return RootImpl::None;
 }
 
-/// Whether the manager runs the boot scripts of every enabled module itself. ksud and apd
-/// do. Magisk runs only those of the modules it mounts, which leaves out the Zygisk-only
-/// ones, and with no framework nothing runs them at all.
+/// ksud and apd run every enabled module's boot scripts themselves. Magisk runs only those
+/// of the modules it mounts, skipping Zygisk-only ones, and no framework runs none at all.
 bool manager_runs_stages(RootImpl impl) {
     return impl == RootImpl::KernelSu || impl == RootImpl::APatch;
 }
@@ -115,9 +110,8 @@ bool ignore_disable() {
 
 bool exists(const std::string &path) { return access(path.c_str(), F_OK) == 0; }
 
-/// Whether any zygote carries our library, hooks or no hooks. It stays mapped for a
-/// zygote's whole life -- only a specialized child unmaps itself -- so this answers the one
-/// question a disarm has: is there a mapping that only a restart can clear.
+/// A mapping lasts a zygote's whole life, which answers the only question a disarm has: is
+/// there one that a restart has to clear.
 bool zygote_has_library() {
     for (auto pid : find_zygotes()) {
         if (has_library_mapped(pid, "libzygisk.so")) return true;
@@ -136,9 +130,8 @@ bool selinux_enforcing() {
     return read_ok && value == '1';
 }
 
-/// The kernel resolves a context written to this node against the loaded policy, which is
-/// the one question worth asking. The string must arrive without a trailing newline: that
-/// is part of it, and makes even a valid context invalid.
+/// The kernel resolves the context against the loaded policy. Without a trailing newline:
+/// it counts as part of the string and invalidates even a good context.
 bool selinux_knows(const char *context) {
     int fd = open(kContextPath, O_WRONLY | O_CLOEXEC);
     if (fd == -1) return false;
@@ -155,10 +148,9 @@ bool set_permissive() {
     return written;
 }
 
-/// The daemon labels its socket zygisk_file, a type only our sepolicy.rule defines, and
-/// nothing loads that rule when no root framework is installed. The policy then leaves the
-/// socket unlabeled and denies zygote the write, so the injected library fails its heartbeat
-/// and loads nothing. Returns whether arming is worth attempting at all.
+/// Only our sepolicy.rule defines zygisk_file, and no framework loads it. The socket is
+/// then unlabeled and zygote's write denied, so the heartbeat fails and the injector loads
+/// nothing. Returns whether arming is worth attempting at all.
 bool check_selinux(bool permissive) {
     if (!selinux_enforcing()) return true;
 
@@ -176,9 +168,8 @@ bool check_selinux(bool permissive) {
         ERR("cannot write %s, SELinux stays enforcing", kEnforcePath);
     }
 
-    // Arming anyway is worse than not arming: the injection maps the library into a zygote
-    // whose heartbeat the policy denies, and one carrying it unhooked is skipped by every
-    // later rearm until it restarts.
+    // Arming would map the library into a zygote whose heartbeat this policy denies, and a
+    // zygote carrying it unhooked is skipped by every later rearm until it restarts.
     ERR("zygote cannot reach the daemon under this policy, so nothing was armed");
     if (!permissive) WARN("pass --permissive to have this stage set SELinux permissive instead");
     return false;
@@ -203,9 +194,8 @@ bool set_sys_perm(const std::string &path, mode_t mode) {
     return true;
 }
 
-/// Traversable by uid 1000: a late-injected system_server dlopens the library and connects
-/// to the socket in its own context, a DAC check no SELinux setting relaxes. Root still
-/// writes here through CAP_DAC_OVERRIDE.
+/// Traversable by uid 1000: a late-injected system_server opens the library and the socket
+/// as itself, a DAC check no SELinux setting relaxes. Root still writes here regardless.
 bool make_sys_dir(const std::string &path) {
     if (mkdir(path.c_str(), 0555) == -1 && errno != EEXIST) {
         PLOGE("mkdir %s", path.c_str());
@@ -307,10 +297,9 @@ int run_wait(const char *path, const char *name) {
     return status;
 }
 
-/// Started detached from our session and stdio, not as a courtesy: the monitor outlives the
-/// stage that starts it, and a manager that reads a stage's pipe until it closes would
-/// otherwise wait on the monitor for the rest of the session. A redundant monitor finds the
-/// control socket owned and steps aside by itself, so this is unconditional.
+/// Detached from our session and stdio because the monitor outlives the stage: a manager
+/// reading the stage's pipe to EOF would otherwise wait out the whole session. Unconditional,
+/// since a redundant monitor finds the control socket owned and steps aside by itself.
 bool start_monitor() {
     char exe[PATH_MAX];
     auto len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
@@ -358,16 +347,13 @@ bool stop_monitor() {
     return false;
 }
 
-/// Asks the monitor to refresh the daemon's module snapshot and attach whatever is up and
-/// not yet hooked, and waits for its verdict. Idempotent, and a no-op when no zygote is
-/// running.
+/// Refreshes the daemon's module snapshot and attaches whatever is up and not yet hooked,
+/// then waits for the verdict. Idempotent, and a no-op when no zygote is running.
 RearmResult arm() { return send_rearm_command(); }
 
-/// The hooks in a live zygote cannot be undone from outside it -- the restore path runs on
-/// the main thread of a forked child, and a fork landing on a half-restored JNI table is a
-/// zygote crash loop -- and a mapped libzygisk.so cannot be swapped under a running process
-/// either. The restart settles both. Detached, so the framework going down does not take the
-/// caller with it.
+/// Hooks cannot be undone from outside a live zygote -- the restore runs on a forked child's
+/// main thread, and a fork landing on a half-restored JNI table crash-loops -- and a mapped
+/// library cannot be swapped either. Detached, so a framework going down spares the caller.
 void restart_zygote() {
     if (fork_dont_care() == 0) {
         detach_stdio();
@@ -378,9 +364,8 @@ void restart_zygote() {
     }
 }
 
-/// Runs a stage script for every Zygisk module, not waiting for them when \p async.
-/// ZYGISK_IGNORE_DISABLE takes a disable flag as the trace of a manager that is not running
-/// rather than as an intent to skip the module.
+/// Runs a stage script for every Zygisk module, not waiting for them when \p async. Under
+/// ZYGISK_IGNORE_DISABLE a disable flag reads as a manager that is not running.
 void fan_out(const char *script, bool async) {
     char resolved[PATH_MAX];
     std::string parent = get_module_dir() + "/..";
@@ -432,9 +417,8 @@ int post_fs_data() {
 }
 
 int post_mount() {
-    // A normal boot reaches this long before zygote exists, and the monitor seized on init
-    // catches it the usual way. Gated only to keep that boot's log quiet: a rearm with no
-    // zygote running attaches nothing.
+    // A normal boot reaches this long before zygote exists, where the monitor seized on init
+    // catches it. Gated only to keep that boot's log quiet; a rearm then attaches nothing.
     if (find_zygotes().empty()) return EXIT_SUCCESS;
 
     SAY("system already running, arming NeoZygisk");
@@ -448,9 +432,8 @@ int post_mount() {
     case RearmResult::NoZygote:
         return EXIT_SUCCESS;
     case RearmResult::NeedsRestart:
-        // Injecting the library again is not an option -- it is already mapped -- so the
-        // zygote that carries it has to go. Everything it forked goes with it, which is
-        // the same cost a reboot would have, without the reboot.
+        // The library is already mapped, so nothing can be injected over it: the zygote
+        // carrying it has to go, and everything it forked with it.
         WARN("a zygote carries our library without hooks, which only a restart clears");
         SAY("restarting zygote");
         restart_zygote();
@@ -467,9 +450,9 @@ int service() {
     return EXIT_SUCCESS;
 }
 
-/// KernelSU runs this after replacing the module directory, while the monitor from the last
-/// boot still traces init through binaries that are no longer on disk. A hot install re-runs
-/// no boot stage, so nothing else would start the new monitor.
+/// KernelSU runs this after replacing the module directory, while the old monitor still
+/// traces init through binaries that are gone. No boot stage re-runs, so nothing else
+/// would start the new one.
 int hot_install() {
     // Deliberately not fatal: a monitor that outlasts the wait finds the control socket
     // owned and stands down, which is the only sane answer left.
@@ -478,9 +461,9 @@ int hot_install() {
     SAY("starting the new monitor");
     if (!stage_work_directory() || !start_monitor()) return EXIT_FAILURE;
 
-    // A handshake, not a request to inject: the monitor binds its control socket only after
-    // seizing init, so a command reaching it proves the zygote restarted below cannot be
-    // missed. Rearm is the one to send because it also starts the daemon.
+    // A handshake, not a request to inject: the monitor binds its socket only after seizing
+    // init, so an answer proves the restart below cannot be missed. Rearm also starts the
+    // daemon.
     if (arm() == RearmResult::Failed) {
         ERR("the new monitor did not answer, NeoZygisk will start on the next boot");
         return EXIT_FAILURE;
@@ -503,10 +486,9 @@ int disarm() {
     return EXIT_SUCCESS;
 }
 
-/// Arms a system that is already up: a KernelSU temp root, where ksud runs this stage
-/// instead of post-fs-data, or a build with no root framework, such as AOSP userdebug, where
-/// nothing runs at boot and the trigger is a root shell. Processes that were already running
-/// stay uninjected, having been forked from a zygote with no hooks.
+/// Arms a system that is already up: a KernelSU temp root, where ksud runs this instead of
+/// post-fs-data, or a build with no root framework, where a root shell is the only trigger.
+/// Processes already running stay uninjected, forked as they were from a bare zygote.
 int late_load(const StageOptions &options) {
     if (options.stop) return disarm();
 
@@ -569,19 +551,17 @@ bool parse_stage(std::string_view name, Stage &out) {
 int run_stage(Stage stage, const StageOptions &options) {
     g_stage = name_of(stage);
 
-    // Magisk sets this for the module scripts it runs when its own Zygisk is enabled, which
-    // is the one case where NeoZygisk has to stand down. Our own injector sets it as well,
-    // in the root manager app's process, and `su` hands a caller's environment straight
-    // through -- so a stage the manager app triggers, a hot install above all, inherits it
-    // with no Magisk anywhere in sight. Only Magisk has a built-in Zygisk, so that is what
-    // makes the variable mean what this check reads into it.
+    // Magisk sets this for its module scripts when its own Zygisk is on, the one case to
+    // stand down for. Our injector sets it too, in the manager app, and `su` passes a
+    // caller's environment through -- so a hot install inherits it with no Magisk in sight.
+    // Only Magisk has a built-in Zygisk, which is what the root check settles.
     if (getenv("ZYGISK_ENABLED") != nullptr && root_impl() == RootImpl::Magisk) {
         SAY("Magisk's own Zygisk is enabled, standing down");
         return EXIT_SUCCESS;
     }
 
-    // Passed on to the monitor we start and the daemon it forks, which applies it to the
-    // module snapshot the same way the fan-out below applies it to the boot scripts.
+    // Read by the monitor we start and the daemon it forks, which apply it to the module
+    // snapshot as the fan-out below applies it to the boot scripts.
     if (options.ignore_disable) setenv("ZYGISK_IGNORE_DISABLE", "1", 1);
 
     switch (stage) {
