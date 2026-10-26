@@ -16,16 +16,15 @@ use crate::{constants, lp_select, root_impl};
 use anyhow::{Context as AnyhowContext, Result, bail};
 use log::{debug, error, info, trace, warn};
 use passfd::FdPassingExt;
-use rustix::io::{FdFlags, fcntl_setfd};
 use std::fs;
 use std::io::Error;
 use std::os::fd::AsRawFd;
-use std::os::fd::{AsFd, OwnedFd, RawFd};
+use std::os::fd::{OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::{
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
-    process::Command,
+    process::{Child, Command},
     sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex, OnceLock, RwLock},
     thread,
@@ -51,6 +50,9 @@ struct AppContext {
     /// that asked for it, and kept for the rescans the daemon does on its own.
     ignore_disable: AtomicBool,
     mount_manager: Arc<MountNamespaceManager>,
+    /// Companions spawned and not yet waited for. A companion is a child of a daemon
+    /// that never exits, so one that exits stays a zombie until `reap_companions` runs.
+    pending_companions: Mutex<Vec<Child>>,
 }
 
 impl AppContext {
@@ -58,6 +60,25 @@ impl AppContext {
     /// `Arc`, so a refresh is never blocked by a slow reader.
     fn modules(&self) -> Arc<Vec<Module>> {
         Arc::clone(&self.modules.read().unwrap())
+    }
+
+    fn reap_companions(&self) {
+        self.pending_companions
+            .lock()
+            .unwrap()
+            .retain_mut(|child| match child.try_wait() {
+                Ok(None) => true,
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        warn!("Companion {} exited: {}", child.id(), status);
+                    }
+                    false
+                }
+                Err(e) => {
+                    warn!("Cannot wait for companion {}: {}", child.id(), e);
+                    false
+                }
+            });
     }
 
     /// Rescans the module directory on the terms the request carries, which hold for the
@@ -88,6 +109,7 @@ impl AppContext {
         // which closes its library memfds and its companion sockets. A companion whose
         // socket is closed has no remaining caller, so it exits on its own.
         *self.modules.write().unwrap() = Arc::new(modules);
+        self.reap_companions();
         info!("Module snapshot refreshed: {} module(s) {:?}", count, names);
         Ok(count)
     }
@@ -117,6 +139,7 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
         modules: RwLock::new(Arc::new(modules)),
         ignore_disable: AtomicBool::new(false),
         mount_manager,
+        pending_companions: Mutex::new(Vec::new()),
     });
     let listener = create_daemon_socket()?;
 
@@ -430,65 +453,46 @@ fn create_daemon_socket() -> Result<UnixListener> {
     Ok(listener)
 }
 
-/// Spawns a companion process for a module.
-///
-/// This involves forking, setting up a communication channel (Unix socket pair),
-/// and re-executing the daemon binary with special arguments (`companion <fd>`).
-fn spawn_companion(name: &str, lib_fd: RawFd) -> Result<Option<UnixStream>> {
+/// Spawns a companion process for a module: this binary re-executed as
+/// `companion <fd>`, holding one end of a socket pair.
+fn spawn_companion(context: &AppContext, name: &str, lib_fd: RawFd) -> Result<Option<UnixStream>> {
     let (mut daemon_sock, companion_sock) = UnixStream::pair()?;
 
     // FIXME: A more robust way to get the current executable path is desirable.
     let self_exe = std::env::args().next().unwrap();
     let nice_name = self_exe.split('/').last().unwrap_or("zygiskd");
 
-    // The fork/exec logic is now handled directly here.
-    // # Safety
-    // This is highly unsafe because it uses `fork()` and `exec()`. The child
-    // process must not call any non-async-signal-safe functions before `exec()`.
+    let companion_fd = companion_sock.as_raw_fd();
+    let mut command = Command::new(&self_exe);
+    command
+        .arg0(format!("{}-{}", nice_name, name))
+        .arg("companion")
+        .arg(companion_fd.to_string());
+    // The socket is the one fd that has to survive exec, and clearing the flag is all a
+    // child forked from a multi-threaded process should do before it is replaced.
     unsafe {
-        let pid = libc::fork();
-        if pid < 0 {
-            // Fork failed
-            bail!(Error::last_os_error());
-        }
+        command.pre_exec(move || {
+            if libc::fcntl(companion_fd, libc::F_SETFD, 0) == -1 {
+                return Err(Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 
-        if pid == 0 {
-            // --- Child Process ---
-            drop(daemon_sock); // Child doesn't need the daemon's end of the socket.
+    let child = command.spawn().context("Failed to spawn companion")?;
+    context.pending_companions.lock().unwrap().push(child);
+    // The companion owns its copy now. Keeping ours would deny the read below the EOF it
+    // needs when a companion dies before answering.
+    drop(companion_sock);
 
-            // The companion socket FD must be passed to the new process,
-            // so we must remove the `FD_CLOEXEC` flag.
-            fcntl_setfd(companion_sock.as_fd(), FdFlags::empty())
-                .expect("Failed to clear CLOEXEC on companion socket");
+    daemon_sock.write_string(name)?;
+    daemon_sock.send_fd(lib_fd)?;
 
-            // The first argument (`arg0`) is used to set a descriptive process name.
-            let arg0 = format!("{}-{}", nice_name, name);
-            let companion_fd_str = format!("{}", companion_sock.as_raw_fd());
-
-            // exec replaces the current process; it does not return on success.
-            let err = Command::new(&self_exe)
-                .arg0(arg0)
-                .arg("companion")
-                .arg(companion_fd_str)
-                .exec();
-
-            // If exec returns, it's always an error.
-            bail!("exec failed: {}", err);
-        }
-
-        // --- Parent Process ---
-        drop(companion_sock); // Parent doesn't need the companion's end of the socket.
-
-        // Now, establish communication with the newly spawned companion.
-        daemon_sock.write_string(name)?;
-        daemon_sock.send_fd(lib_fd)?;
-
-        // Wait for the companion's response to know if it loaded the module successfully.
-        match daemon_sock.read_u8()? {
-            0 => Ok(None),              // Module has no companion entry point or failed to load.
-            1 => Ok(Some(daemon_sock)), // Companion is ready.
-            _ => bail!("Invalid response from companion setup"),
-        }
+    // Wait for the companion's response to know if it loaded the module successfully.
+    match daemon_sock.read_u8()? {
+        0 => Ok(None),              // Module has no companion entry point or failed to load.
+        1 => Ok(Some(daemon_sock)), // Companion is ready.
+        _ => bail!("Invalid response from companion setup"),
     }
 }
 
@@ -538,6 +542,9 @@ fn handle_update_mount_namespace(stream: &mut UnixStream, context: &AppContext) 
 }
 
 fn handle_read_modules(stream: &mut UnixStream, context: &AppContext) -> Result<()> {
+    // Every injected process comes through here, which is what keeps a companion that
+    // died between refreshes from staying a zombie for long.
+    context.reap_companions();
     // One snapshot for the whole reply, so the count written first always matches the
     // number of entries that follow even if a refresh lands mid-reply.
     let modules = context.modules();
@@ -587,7 +594,7 @@ fn handle_request_companion_socket(stream: &mut UnixStream, context: &AppContext
 
     // If no companion exists, try to spawn one.
     if companion.is_none() {
-        match spawn_companion(&module.name, module.lib_fd.as_raw_fd()) {
+        match spawn_companion(context, &module.name, module.lib_fd.as_raw_fd()) {
             Ok(Some(sock)) => {
                 trace!("Spawned new companion for `{}`.", module.name);
                 *companion = Some(sock);
