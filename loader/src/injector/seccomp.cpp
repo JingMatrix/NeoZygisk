@@ -11,59 +11,23 @@
 #include <array>
 #include <cstdint>
 #include <fstream>
-#include <string>
 
 #include "logging.hpp"
+#include "misc.hpp"
 #include "zygisk.hpp"
 
-/**
- * @brief Checks if the seccomp-based clearing method should be skipped.
- *
- * This function's purpose is to facilitate a hybrid strategy for clearing
- * the ptrace_message. The seccomp method, while effective on older kernels,
- * creates a detectable artifact on newer kernels (Linux 5.9+): it increments
- * the filter count in the "Seccomp_filters:" field of /proc/self/status.
- *
- * This function checks for the *existence* of that field.
- * - If the field exists, it implies a newer kernel where this method is
- *   detectable. We should therefore SKIP this method and rely on a different
- *   one (e.g., PTRACE_SYSCALL) which is stealthier on new kernels.
- * - If the field does not exist, it implies an older kernel where this seccomp
- *   method is probably necessary and potentially invisible.
- *
- * @return True if the seccomp method should be skipped, false if it should be used.
- */
-
-static bool should_skip_seccomp_injection() {
-    // Use std::ifstream for automatic resource management (RAII).
-    std::ifstream status_file("/proc/self/status");
-    if (!status_file.is_open()) {
-        // Fail-safe: if we can't check, we skip the injection.
-        return true;
-    }
-
-    const std::string needle = "Seccomp_filters:";
-    std::string line;
-
-    while (std::getline(status_file, line)) {
-        // C++20's starts_with is safer and more expressive than strncmp.
-        if (line.starts_with(needle)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
+// Our monitor arms PTRACE_O_TRACEEXEC on every zygote candidate, so the exec event leaves
+// zygote holding its own pid in task->ptrace_message for each app it forks to inherit. A
+// PTRACE_EVENT_SECCOMP overwrites that with the filter's return data, which is zero here.
+// Later kernels clear the field on their own, where a filter would buy nothing and only add
+// to the count /proc/self/status reports since 5.9.
 void send_seccomp_event_if_needed() {
-    if (should_skip_seccomp_injection()) {
+    if (!kernel_keeps_ptrace_message()) {
         return;
     }
 
-    // Use std::array for type-safe, fixed-size arrays.
     std::array<uint32_t, 4> args{};
 
-    // Read random bytes to create a unique syscall signature.
     {
         std::ifstream random_file("/dev/urandom", std::ios::binary);
         if (!random_file.is_open()) {
@@ -75,17 +39,16 @@ void send_seccomp_event_if_needed() {
             PLOGE("seccomp: read(random_file)");
             return;
         }
-    }  // random_file is automatically closed here by its destructor.
+    }
 
-    // Modify a bit to ensure the signature is highly unlikely to occur naturally.
+    // An exit status is eight bits wide, so this bit keeps the signature out of reach of a
+    // real exit_group().
     args[0] |= 0x10000;
 
     const std::array<sock_filter, 12> filter = {{
-        // 1. Check if the syscall is __NR_exit_group. If not, allow it.
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_exit_group, 0, 9),
 
-        // 2. If it is __NR_exit_group, check if all 4 arguments match our random signature.
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, args[0], 0, 7),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])),
@@ -95,10 +58,10 @@ void send_seccomp_event_if_needed() {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[3])),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, args[3], 0, 1),
 
-        // 3. If everything matches, trap the syscall, triggering a PTRACE_EVENT_SECCOMP.
+        // Only our own signature is traced, and its return data, which the event message
+        // takes, is zero. Everything else is allowed, so this filter never tightens the ones
+        // zygote installs later.
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRACE),
-
-        // 4. Default action for any non-matching syscall is to allow it.
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     }};
 
@@ -113,7 +76,8 @@ void send_seccomp_event_if_needed() {
         return;
     }
 
-    // This syscall triggers the seccomp filter. The tracer will intercept it
-    // and prevent it from actually executing, so Zygote will not exit.
+    // The tracer skips the syscall at the event stop, so zygote does not exit. A tracer that
+    // never armed PTRACE_O_TRACESECCOMP gets no event and the kernel answers -ENOSYS, which
+    // leaves the process alive and the message in place.
     syscall(__NR_exit_group, args[0], args[1], args[2], args[3]);
 }

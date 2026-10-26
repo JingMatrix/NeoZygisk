@@ -1,6 +1,9 @@
 #include "misc.hpp"
 
+#include <sys/utsname.h>
+
 #include <charconv>
+#include <cstdio>
 #include <string_view>
 
 #include "logging.hpp"
@@ -29,4 +32,23 @@ int parse_int(std::string_view s) {
 
     // Return the designated error value if parsing fails.
     return -1;
+}
+
+bool kernel_keeps_ptrace_message() {
+    static const bool keeps = [] {
+        utsname uts{};
+        if (uname(&uts) == -1) {
+            PLOGE("uname");
+            return false;
+        }
+        int major = 0, minor = 0;
+        if (sscanf(uts.release, "%d.%d", &major, &minor) != 2) {
+            LOGW("cannot read a version out of kernel release %s", uts.release);
+            return false;
+        }
+        bool before_5_3 = major < 5 || (major == 5 && minor < 3);
+        LOGV("kernel %s %s the ptrace event message", uts.release, before_5_3 ? "keeps" : "clears");
+        return before_5_3;
+    }();
+    return keeps;
 }
