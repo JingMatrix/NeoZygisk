@@ -6,8 +6,8 @@
 
 void init_monitor();
 
-/// Attaches to \p pid, maps the injector into it and calls its entry point. \p hooked
-/// reports whether the injector installed hooks; the library stays mapped either way.
+/// Attaches to one process, maps the injector into it and calls its entry point. The hooked
+/// flag reports whether the injector installed hooks; the library stays mapped either way.
 bool trace_target(int pid, TraceMode mode, bool *hooked = nullptr);
 
 /// The exit status of `tracer trace`, which is how the monitor learns what it achieved.
@@ -26,9 +26,17 @@ enum Command {
     DAEMON_SET_INFO = 5,
     DAEMON_SET_ERROR_INFO = 6,
     SYSTEM_SERVER_STARTED = 7,
-    // The single late-start entry point, from a KernelSU late-load stage or a root shell:
-    // refresh the module snapshot and attach whatever is up and not yet hooked.
+    // The single late-start entry point, from the service stage, a late load or a root
+    // shell: refresh the module snapshot and attach whatever is up and not yet hooked.
     REARM = 8
+};
+
+/// The control socket's wire format for the commands that carry something: the ones that
+/// do not are sent as a bare Command.
+struct [[gnu::packed]] CtlMessage {
+    Command cmd;
+    int length;
+    char data[0];
 };
 
 /// The name a command is logged under. Values off the socket may be none of them.
@@ -61,11 +69,14 @@ enum class RearmResult : uint8_t {
     Failed = 0,
     /// Nothing is up yet. The monitor is seized on init and will catch zygote at exec.
     NoZygote,
-    /// A bare zygote was injected and the daemon answered its heartbeat.
-    Armed,
-    /// Every zygote already carries hooks this monitor's daemon confirmed.
-    AlreadyArmed,
-    /// A zygote carries our library with no hooks, and nothing can be injected over it.
+    /// This rearm injected a bare zygote, and the daemon answered its heartbeat.
+    Injected,
+    /// Every zygote already carried hooks this monitor's daemon confirmed.
+    AlreadyHooked,
+    /// An injection the monitor started at exec is still running, and finishes on its own.
+    Injecting,
+    /// A zygote carries our library with no hooks, which we answer with a restart rather
+    /// than injecting over a mapping that is already there.
     NeedsRestart,
 };
 
@@ -73,10 +84,12 @@ inline const char *name_of(RearmResult result) {
     switch (result) {
     case RearmResult::NoZygote:
         return "no zygote";
-    case RearmResult::Armed:
-        return "armed";
-    case RearmResult::AlreadyArmed:
-        return "already armed";
+    case RearmResult::Injected:
+        return "injected";
+    case RearmResult::AlreadyHooked:
+        return "already hooked";
+    case RearmResult::Injecting:
+        return "injecting";
     case RearmResult::NeedsRestart:
         return "needs restart";
     default:
@@ -90,4 +103,4 @@ bool send_control_command(Command cmd);
 
 /// Sends `rearm` and waits for the answer the monitor sends once it is done. Failed when
 /// no monitor could be reached, or none answered in time.
-RearmResult send_rearm_command();
+RearmResult send_rearm_command(bool ignore_disable);

@@ -21,6 +21,179 @@
 #include "main.hpp"
 #include "utils.hpp"
 
+/**
+ * @brief Who calls a stage, in which order, and under what rules.
+ *
+ * Read from AOSP (system/core/init, system/core/rootdir, system/core/toolbox,
+ * frameworks/base), KernelSU (kernel/, userspace/ksud/src/), APatch (apd/src/, KernelPatch
+ * kernel/patch/) and Magisk (native/src/).
+ *
+ *
+ * Case 1: an init bootstrap, driven by a framework
+ *
+ * All three add the same four init actions. KernelSU writes KERNEL_SU_RC from the kernel
+ * (runtime/ksud_integration.c); Magisk writes inject_magisk_rc from its init
+ * (init/rootdir.rs); KernelPatch copies the original rc -- one of /system/etc/init/hw/init.rc,
+ * /init.rc, /vendor/etc/init/hw/init.target.rc -- to /dev/user_init.rc with its actions
+ * appended and redirects init to read that (patch/android/userd.c). Its stage line is
+ * `/system/bin/truncate <superkey> su -Z u:r:magisk:s0 exec /data/adb/apd -s <superkey>
+ * <stage>`; it also hooks early-init, init and late-init for its own kernel events, and
+ * removes /dev/user_init.rc at boot-completed.
+ *
+ * Each action is an `exec`, which init runs as a temporary oneshot service: ExecStart sets
+ * is_exec_service_running_, and init's main loop stops calling am.ExecuteOneCommand() until
+ * the process is reaped (init/init.cpp, init/service.cpp). None of the rc lines sets a
+ * timeout. The commands run as root in u:r:ksu:s0 under KernelSU and in u:r:magisk:s0 under
+ * Magisk and APatch. rootdir/init.rc reaches the triggers in this order:
+ *
+ *   post-fs-data          /data is mounted. The framework runs: common post-fs-data.d
+ *                         scripts, every module's post-fs-data.sh, system.prop, the module
+ *                         mount, and -- ksud and apd only -- every module's post-mount.sh.
+ *                         magiskd loads system.prop while mounting. Magisk has no post-mount.
+ *   zygote-start          wait_for_prop odsign.verification.done 1, start statsd, start
+ *                         zygote, start zygote_secondary. No framework action is hooked here.
+ *   nonencrypted          class_start main, class_start late_start, and the framework's
+ *                         service command: common service.d scripts and every module's
+ *                         service.sh, none waited for.
+ *   sys.boot_completed=1  ActivityManagerService.finishBooting sets this and dev.bootcomplete.
+ *                         ksud and apd run every module's boot-completed.sh; magiskd runs no
+ *                         module script and resets its own zygisk state.
+ *
+ * All three hook the service command twice, under `on nonencrypted` and under
+ * `on property:vold.decrypt=trigger_restart_framework`: the two rc actions that ran
+ * `class_start late_start`, the second belonging to full-disk encryption, where /data stays
+ * unreadable until the password is entered and vold then sets the property (vold/cryptfs.cpp,
+ * "startup service classes main and late_start"). Magisk needed neither until 2023, when
+ * dba5020e4 replaced its `class late_start` service -- which both paths start -- with the
+ * explicit pair; KernelSU added the same pair in 00b1d753 and KernelPatch carries it in
+ * userd.c. AOSP had already deleted those actions from init.rc and cryptfs from vold
+ * (335cd1f4a3 and 0803ba09: "These triggers were specific to FDE, which is no longer
+ * supported"), and init queues `nonencrypted` for file- and metadata-encrypted data as well
+ * (init/builtins.cpp), so only the first action can fire on a current tree. What reaches us is
+ * the shape: the service stage has two entry points, so running it twice must be harmless.
+ *
+ * ksud and apd skip every stage when Magisk is installed. In safe mode all three skip the
+ * scripts, and each disables the modules on its post-fs-data path.
+ *
+ *
+ * Case 2: a late load into a system that is already running
+ *
+ * KernelSU only: `ksud late-load` inserts kernelsu.ko at runtime, takes an allow_shell flag,
+ * and its own comment calls this jailbreak mode, where the bundled flag is meaningless
+ * because no boot image can be flashed (late_load.rs). KernelPatch has a loadable-module
+ * delivery whose README lists the module loader, kstorage and the allowlist as unimplemented.
+ *
+ * After loading the module ksud installs itself, handles updated and removed modules, applies
+ * sepolicy.rule and the root profiles and starts its features, then runs, in order: a
+ * `late-load` stage, blocking against a 35 second deadline (BOOT_STAGE_TIMEOUT) shared with
+ * what follows; system.prop; the module mount; a blocking `post-mount` stage; an unwaited
+ * `service` stage; an unwaited `boot-completed` stage; a force-stop and restart of the manager
+ * app. Every script in such a session also reads KSU_LATE_LOAD=1 and
+ * KSU_RUNTIME_MODE=late-load. A root shell on such a system runs in the domain its root
+ * profile names, which KernelSU defaults to u:r:ksu:s0 (kernel/policy/allowlist.c).
+ *
+ *
+ * Case 3: a soft reboot simulated by the framework
+ *
+ * soft_reboot.rs clears sys.boot_completed, runs an `emulated-soft-reboot` stage against a 5
+ * second deadline, runs `stop`, waits for the services to go down, replays the whole
+ * post-fs-data path including the module mount and `post-mount`, then runs `start`, the
+ * service stage and boot-completed. `ksud unload` (unload.rs) runs `stop`, then SIGKILL to
+ * every process in u:r:ksu:s0 and to every holder of a [ksu_driver] or [ksu_fdwrapper] fd.
+ *
+ *
+ * Case 4: a hot install
+ *
+ * A module asks for one from customize.sh with MODULE_HOT_INSTALL_REQUEST and
+ * MODULE_HOT_RUN_SCRIPT. ksud moves the staged directory over the live one, applies its
+ * sepolicy.rule, enters init's mount namespace, and runs the named script with a 30 second
+ * deadline, stdin closed and SIGPIPE ignored. Its own comment records what does not happen:
+ * partition mounts, system.prop and post-fs-data wait for the next boot (hot_install.rs).
+ * installer.sh clears the live directory's `disable` and `remove` markers before the swap, so
+ * an install re-enables a module the user had turned off, and the swapped-in directory carries
+ * no marker of its own.
+ *
+ *
+ * Case 5: a direct invocation of late-load.sh, with no framework present
+ *
+ * Nothing above runs. No framework sets KSU, APATCH or KSU_LATE_LOAD in the environment, no
+ * module's boot scripts have run on that boot, and nothing will mount the module set or reach
+ * a later stage. None of these sources says anything about the uid, domain or environment
+ * such a shell has; they are whatever granted the root.
+ *
+ *
+ * How a script is run
+ *
+ * All three exec `busybox sh <script>` from their own assets. ksud and apd set the working
+ * directory to the script's own; magiskd sets none. Before the exec, ksud restores the
+ * original signal mask, detaches the process group and switches cgroups; apd puts the script
+ * in its own process group and switches cgroups; magiskd only sets the environment, and
+ * double-forks its service scripts so init reparents them.
+ *
+ *   ksud     spawns, then waits for that child until the shared deadline; on timeout it warns
+ *            and carries on without killing it, and once the deadline has passed later
+ *            scripts are spawned with no wait (exec_script_with).
+ *   apd      blocks with no deadline on post-fs-data and post-mount; does not wait for
+ *            service or boot-completed.
+ *   magiskd  shares one 35 second budget (POST_FS_DATA_SCRIPT_MAX_TIME) between
+ *            post-fs-data.d and the modules' post-fs-data.sh, inside a forked child it waits
+ *            for; when its timer wins, the rest run unwaited.
+ *   action   ksud waits for action.sh forever, apd blocks. The KernelSU manager runs
+ *            `ksud module action <id>` in a root shell, streams stdout into a screen, and
+ *            closes that screen on completion only when it was launched from a shortcut.
+ *
+ *
+ * What a script reads about its caller
+ *
+ * ksud: ASH_STANDALONE, KSU=true, KSU_VER, KSU_VER_CODE, KSU_KERNEL_VER_CODE, KSU_UAPI_VER,
+ * KSU_MODULE=<id>, KSU_RUNTIME_MODE as built-in, lkm or late-load, KSU_LATE_LOAD=1 on a
+ * late-loaded session, and its bin directory appended to PATH.
+ *
+ * apd: ASH_STANDALONE, APATCH=true, APATCH_VER, APATCH_VER_CODE, AP_MODULE=<id>, and its bin
+ * directory appended to PATH. It sets no KSU.
+ *
+ * magiskd: ASH_STANDALONE, its tmp directory -- /debug_ramdisk or /sbin -- appended to PATH,
+ * and ZYGISK_ENABLED=1 only when its own Zygisk is enabled. That Zygisk enters zygote through
+ * the ro.dalvik.vm.native.bridge property and restores the property after three zygote
+ * crashes (zygisk/daemon.rs). Nothing in its environment names Magisk.
+ *
+ *
+ * Which modules a stage reaches
+ *
+ * ksud: every module directory with neither a `disable` nor a `remove` file, less the
+ * metamodule, which it drives separately and which runs the module mount. apd: every module
+ * without a `disable` file. magiskd: the list it collects once per boot -- a `disable` file
+ * leaves a module out, a `remove` file has its uninstall.sh run and the directory deleted,
+ * and when its own Zygisk is off every module holding a zygisk/ directory is dropped, so such
+ * a module is neither mounted nor given a boot script.
+ *
+ *
+ * Zygote, as init declares it
+ *
+ * init.zygote64.rc: `service zygote /system/bin/app_process64 -Xzygote /system/bin --zygote
+ * --start-system-server`, `class main`, `critical window=${zygote.critical_window.minute:-off}
+ * target=zygote-fatal`, and an onrestart list that restarts audioserver, cameraserver, media,
+ * media.tuner if running, netd and wificond, takes a wake lock, and asks vdc to abort a fuse
+ * volume.
+ *
+ * Magisk patches two more things into those files (init/rootdir.cpp): Samsung's
+ * `on property:persist.sys.zygote.early=` trigger is renamed to one nothing sets, so zygote
+ * cannot start before post-fs-data, and every `service zygote` gets an `onrestart exec ...
+ * magisk --zygote-restart` line, which replaced the init.svc.zygote property triggers it
+ * hooked until 42eb92805.
+ *
+ * `stop` and `start` with no argument are toolbox/start.cpp: ctl.stop or ctl.start for netd,
+ * surfaceflinger, audioserver and zygote, plus zygote_secondary unless ro.zygote is zygote32
+ * or zygote64, stopped in the reverse of that order.
+ *
+ * That `critical` line is conditional: ParseCritical returns before setting SVC_CRITICAL when
+ * the window expands to "off", which is its default, so zygote is critical only where
+ * zygote.critical_window.minute is set. Where it is, init/service.cpp reboots into the named
+ * target on a fifth crash inside the window -- or a fifth before sys.boot_completed, where the
+ * window is not applied -- throttled to once per 24 hours through
+ * persist.init.svc.last_fatal_reboot_epoch.
+ */
+
 namespace {
 
 constexpr uid_t AID_SYSTEM = 1000;
@@ -54,21 +227,6 @@ const char *g_stage = "stage";
 
 // --- The situation -----------------------------------------------------------------------
 
-enum class RootImpl { KernelSu, APatch, Magisk, None };
-
-const char *name_of(RootImpl impl) {
-    switch (impl) {
-    case RootImpl::KernelSu:
-        return "KernelSU";
-    case RootImpl::APatch:
-        return "APatch";
-    case RootImpl::Magisk:
-        return "Magisk";
-    default:
-        return "no root framework";
-    }
-}
-
 bool on_path(const char *name) {
     const char *path = getenv("PATH");
     if (path == nullptr) path = "/system/bin:/system/xbin";
@@ -86,29 +244,18 @@ bool on_path(const char *name) {
     }
 }
 
-/// ksud exports KSU and apd exports APATCH. Magisk exports nothing and puts its binary on
-/// PATH only for the stages it runs itself, so a stage reached any other way has to look.
-RootImpl root_impl() {
-    if (getenv("KSU") != nullptr) return RootImpl::KernelSu;
-    if (getenv("APATCH") != nullptr) return RootImpl::APatch;
-    if (on_path("magisk") || access("/data/adb/magisk/magisk", X_OK) == 0) {
-        return RootImpl::Magisk;
-    }
-    return RootImpl::None;
-}
-
-/// ksud and apd run every enabled module's boot scripts themselves. Magisk runs only those
-/// of the modules it mounts, skipping Zygisk-only ones, and no framework runs none at all.
-bool manager_runs_stages(RootImpl impl) {
-    return impl == RootImpl::KernelSu || impl == RootImpl::APatch;
-}
-
-bool ignore_disable() {
-    const char *value = getenv("ZYGISK_IGNORE_DISABLE");
-    return value != nullptr && value[0] != '\0';
-}
+/// Whether the caller is running this stage for every module itself, which leaves us none to
+/// trigger. ksud and apd each set their variable for every script they run; magiskd names
+/// itself in nothing it sets, and neither does a root shell, and both of those leave us the
+/// Zygisk modules. The same two carry on with the rest of their stage sequence after we
+/// return, which is what a late load hands back to -- see cases 1 and 2 above.
+bool caller_fans_out() { return getenv("KSU") != nullptr || getenv("APATCH") != nullptr; }
 
 bool exists(const std::string &path) { return access(path.c_str(), F_OK) == 0; }
+
+/// The marker a manager writes when the user turns NeoZygisk off. Every framework's own
+/// fan-out leaves a module carrying it out of every stage.
+bool module_disabled() { return exists(get_module_dir() + "/disable"); }
 
 /// A mapping lasts a zygote's whole life, which answers the only question a disarm has: is
 /// there one that a restart has to clear.
@@ -194,14 +341,15 @@ bool set_sys_perm(const std::string &path, mode_t mode) {
     return true;
 }
 
-/// Traversable by uid 1000: a late-injected system_server opens the library and the socket
-/// as itself, a DAC check no SELinux setting relaxes. Root still writes here regardless.
+/// Traversable by uid 1000 and nobody else: a late-injected system_server opens the library
+/// and the socket as itself, which no SELinux setting relaxes, while root overrides DAC
+/// anyway.
 bool make_sys_dir(const std::string &path) {
-    if (mkdir(path.c_str(), 0555) == -1 && errno != EEXIST) {
+    if (mkdir(path.c_str(), 0550) == -1 && errno != EEXIST) {
         PLOGE("mkdir %s", path.c_str());
         return false;
     }
-    return set_sys_perm(path, 0555);
+    return set_sys_perm(path, 0550);
 }
 
 bool copy_file(const std::string &src, const std::string &dst) {
@@ -349,11 +497,12 @@ bool stop_monitor() {
 
 /// Refreshes the daemon's module snapshot and attaches whatever is up and not yet hooked,
 /// then waits for the verdict. Idempotent, and a no-op when no zygote is running.
-RearmResult arm() { return send_rearm_command(); }
+RearmResult arm(bool ignore_disable) { return send_rearm_command(ignore_disable); }
 
-/// Hooks cannot be undone from outside a live zygote -- the restore runs on a forked child's
-/// main thread, and a fork landing on a half-restored JNI table crash-loops -- and a mapped
-/// library cannot be swapped either. Detached, so a framework going down spares the caller.
+/// Our workaround for a zygote we cannot fix in place: the unhook path runs on a forked
+/// child's main thread, where a fork landing on a half-restored JNI table crash-loops, and
+/// we neither unload nor re-enter a library that is already mapped. Detached, so a framework
+/// going down spares the caller.
 void restart_zygote() {
     if (fork_dont_care() == 0) {
         detach_stdio();
@@ -364,9 +513,10 @@ void restart_zygote() {
     }
 }
 
-/// Runs a stage script for every Zygisk module, not waiting for them when \p async. Under
-/// ZYGISK_IGNORE_DISABLE a disable flag reads as a manager that is not running.
-void fan_out(const char *script, bool async) {
+/// Runs one stage script for every Zygisk module, waiting for each unless async, which is
+/// the boot contract: post-fs-data blocks the stage, service does not. With ignore_disable
+/// the scripts of modules marked disabled run too.
+void fan_out(const char *script, bool async, bool ignore_disable) {
     char resolved[PATH_MAX];
     std::string parent = get_module_dir() + "/..";
     if (realpath(parent.c_str(), resolved) == nullptr) {
@@ -381,14 +531,13 @@ void fan_out(const char *script, bool async) {
         return;
     }
 
-    bool load_disabled = ignore_disable();
     while (auto *entry = readdir(dir)) {
         if (entry->d_name[0] == '.') continue;
 
         std::string module = modules + "/" + entry->d_name;
         struct stat st{};
         if (stat((module + "/zygisk").c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
-        if (!load_disabled && exists(module + "/disable")) continue;
+        if (!ignore_disable && exists(module + "/disable")) continue;
 
         std::string path = module + "/" + script;
         if (!exists(path)) continue;
@@ -410,30 +559,53 @@ void fan_out(const char *script, bool async) {
 
 // --- The stages ---------------------------------------------------------------------------
 
-int post_fs_data() {
-    fan_out("post-fs-data.sh", false);
-    if (!stage_work_directory()) return EXIT_FAILURE;
-    return start_monitor() ? EXIT_SUCCESS : EXIT_FAILURE;
+/// Puts the injector where zygote can read it and starts the monitor, which seizes init and
+/// catches every zygote it forks from then on.
+bool install() { return stage_work_directory() && start_monitor(); }
+
+/// Waits for a monitor to own the control socket. The monitor initialises its ptrace handler
+/// before its socket handler, so an answer here also means init has been seized.
+bool wait_for_monitor() {
+    constexpr int kAttempts = 50;
+    constexpr useconds_t kDelayUs = 200 * 1000;
+    for (int attempt = 0; attempt < kAttempts; ++attempt) {
+        if (monitor_is_running()) return true;
+        usleep(kDelayUs);
+    }
+    return false;
 }
 
-int post_mount() {
-    // A normal boot reaches this long before zygote exists, where the monitor seized on init
-    // catches it. Gated only to keep that boot's log quiet; a rearm then attaches nothing.
+/// init reaches zygote-start after post-fs-data, so there is normally no zygote to inject
+/// here; a device that starts one earlier through persist.sys.zygote.early is armed by the
+/// service stage instead. The whole init command queue waits on this stage -- apd waits with
+/// no deadline at all -- so it does no more than install.
+int post_fs_data(const StageOptions &options) {
+    if (!caller_fans_out()) fan_out("post-fs-data.sh", false, options.ignore_disable);
+    return install() ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+/// Arms a system whose zygote is already up, and reports the verdict. A normal boot reaches
+/// this before zygote exists, where the monitor seized on init does the work, so it is a
+/// no-op that holds up neither the stage nor the boot.
+int arm_running_system(const StageOptions &options) {
     if (find_zygotes().empty()) return EXIT_SUCCESS;
 
     SAY("system already running, arming NeoZygisk");
-    switch (arm()) {
-    case RearmResult::Armed:
+    switch (arm(options.ignore_disable)) {
+    case RearmResult::Injected:
         SAY("zygote injected, with the daemon answering for its hooks");
         return EXIT_SUCCESS;
-    case RearmResult::AlreadyArmed:
+    case RearmResult::AlreadyHooked:
         SAY("zygote is hooked already, nothing to arm");
+        return EXIT_SUCCESS;
+    case RearmResult::Injecting:
+        SAY("the monitor is injecting the zygote it caught on init, nothing to add");
         return EXIT_SUCCESS;
     case RearmResult::NoZygote:
         return EXIT_SUCCESS;
     case RearmResult::NeedsRestart:
-        // The library is already mapped, so nothing can be injected over it: the zygote
-        // carrying it has to go, and everything it forked with it.
+        // We do not inject over a library that is already mapped, so the zygote carrying it
+        // goes instead, and everything it forked with it.
         WARN("a zygote carries our library without hooks, which only a restart clears");
         SAY("restarting zygote");
         restart_zygote();
@@ -445,27 +617,38 @@ int post_mount() {
     return EXIT_FAILURE;
 }
 
-int service() {
-    fan_out("service.sh", true);
-    return EXIT_SUCCESS;
+/// Injecting zygote belongs to this stage: init started it one trigger earlier, so it is up
+/// or coming up by now, and this stage is the first one no framework waits for. The module
+/// daemons are forked first and not waited for either -- one that comes up before the
+/// injection idles harmlessly, while an injected process that cannot find its daemon has
+/// lost it until zygote restarts.
+int service(const StageOptions &options) {
+    if (!caller_fans_out()) fan_out("service.sh", true, options.ignore_disable);
+    return arm_running_system(options);
 }
 
-/// KernelSU runs this after replacing the module directory, while the old monitor still
-/// traces init through binaries that are gone. No boot stage re-runs, so nothing else
-/// would start the new one.
-int hot_install() {
+/// ksud runs this after moving the new module directory over the live one, while the old
+/// monitor still traces init through binaries that are gone, and runs no other stage. The
+/// zygote in front of us carries the previous version of the injector, so it is replaced
+/// rather than injected into.
+int hot_install(const StageOptions &) {
+    if (module_disabled()) {
+        SAY("NeoZygisk is marked disabled, leaving this system as it is");
+        return EXIT_SUCCESS;
+    }
+
     // Deliberately not fatal: a monitor that outlasts the wait finds the control socket
     // owned and stands down, which is the only sane answer left.
     stop_monitor();
 
     SAY("starting the new monitor");
-    if (!stage_work_directory() || !start_monitor()) return EXIT_FAILURE;
+    if (!install()) return EXIT_FAILURE;
 
-    // A handshake, not a request to inject: the monitor binds its socket only after seizing
-    // init, so an answer proves the restart below cannot be missed. Rearm also starts the
-    // daemon.
-    if (arm() == RearmResult::Failed) {
-        ERR("the new monitor did not answer, NeoZygisk will start on the next boot");
+    // Waited for, so the restart below cannot land before the monitor can catch it. Together
+    // with the wait above this is at most 20 seconds, inside ksud's 30 second budget.
+    if (!wait_for_monitor()) {
+        ERR("the new monitor did not take the control socket, NeoZygisk will start on the "
+            "next boot");
         return EXIT_FAILURE;
     }
 
@@ -486,28 +669,35 @@ int disarm() {
     return EXIT_SUCCESS;
 }
 
-/// Arms a system that is already up: a KernelSU temp root, where ksud runs this instead of
-/// post-fs-data, or a build with no root framework, where a root shell is the only trigger.
+/// Arms a system that is already up, whether a framework put it there or a root shell did.
 /// Processes already running stay uninjected, forked as they were from a bare zygote.
 int late_load(const StageOptions &options) {
     if (options.stop) return disarm();
 
     if (!check_selinux(options.permissive)) return EXIT_FAILURE;
-    if (exists(get_module_dir() + "/disable")) {
+    if (module_disabled()) {
         WARN("NeoZygisk is marked disabled, arming it anyway because this stage was run");
     }
 
     SAY("bootstrapping NeoZygisk on a running system");
-    if (int rc = post_fs_data(); rc != EXIT_SUCCESS) return rc;
+    if (!install()) return EXIT_FAILURE;
 
-    // Under ksud or apd the manager mounts the module set and runs the later stages itself,
-    // and the rearm has to wait for that mount.
-    auto impl = root_impl();
-    if (manager_runs_stages(impl)) return EXIT_SUCCESS;
+    // ksud reaches its own module mount, post-mount and service stages once this returns, and
+    // it does not wait for the service stage. Arming there costs nothing of its boot deadline
+    // and has the module set mounted, so the rest of the work is left to our service.sh.
+    if (caller_fans_out()) {
+        SAY("the framework runs its remaining stages next, where NeoZygisk is armed");
+        return EXIT_SUCCESS;
+    }
 
-    SAY("nothing else runs the boot stages under %s, running them here", name_of(impl));
-    int rc = post_mount();
-    service();
+    // The stages ksud reaches after its own late-load stage, in its order, for the case where
+    // nothing else will: the module mount it performs there is a framework's business, but
+    // post-mount.sh and service.sh are the modules' own. post-fs-data.sh is left out because
+    // ksud leaves it out too -- that stage belongs to a boot where /data has just been
+    // mounted and no zygote exists yet.
+    SAY("nothing else runs the other modules' boot scripts here");
+    fan_out("post-mount.sh", false, options.ignore_disable);
+    int rc = service(options);
 
     printf("\n");
     print_status();
@@ -520,8 +710,6 @@ static const char *name_of(Stage stage) {
     switch (stage) {
     case Stage::PostFsData:
         return "post-fs-data";
-    case Stage::PostMount:
-        return "post-mount";
     case Stage::Service:
         return "service";
     case Stage::HotInstall:
@@ -534,8 +722,6 @@ static const char *name_of(Stage stage) {
 bool parse_stage(std::string_view name, Stage &out) {
     if (name == "post-fs-data") {
         out = Stage::PostFsData;
-    } else if (name == "post-mount") {
-        out = Stage::PostMount;
     } else if (name == "service") {
         out = Stage::Service;
     } else if (name == "hotinstall") {
@@ -553,26 +739,21 @@ int run_stage(Stage stage, const StageOptions &options) {
 
     // Magisk sets this for its module scripts when its own Zygisk is on, the one case to
     // stand down for. Our injector sets it too, in the manager app, and `su` passes a
-    // caller's environment through -- so a hot install inherits it with no Magisk in sight.
-    // Only Magisk has a built-in Zygisk, which is what the root check settles.
-    if (getenv("ZYGISK_ENABLED") != nullptr && root_impl() == RootImpl::Magisk) {
+    // caller's environment through, so a hot install inherits it with no Magisk in sight.
+    // Magisk's set_script_env puts the directory holding its binary on PATH in the same
+    // breath as it sets this, so the two arrive together.
+    if (getenv("ZYGISK_ENABLED") != nullptr && on_path("magisk")) {
         SAY("Magisk's own Zygisk is enabled, standing down");
         return EXIT_SUCCESS;
     }
 
-    // Read by the monitor we start and the daemon it forks, which apply it to the module
-    // snapshot as the fan-out below applies it to the boot scripts.
-    if (options.ignore_disable) setenv("ZYGISK_IGNORE_DISABLE", "1", 1);
-
     switch (stage) {
     case Stage::PostFsData:
-        return post_fs_data();
-    case Stage::PostMount:
-        return post_mount();
+        return post_fs_data(options);
     case Stage::Service:
-        return service();
+        return service(options);
     case Stage::HotInstall:
-        return hot_install();
+        return hot_install(options);
     case Stage::LateLoad:
         return late_load(options);
     }
@@ -597,8 +778,10 @@ int print_status() {
     fclose(file);
     fflush(stdout);
 
-    // ksud and apd close the action's output as soon as it exits, leaving no time to read
-    // it. MMRL keeps its own log on screen and needs no pause.
-    if (getenv("MMRL") == nullptr && manager_runs_stages(root_impl())) sleep(5);
+    // ksud and apd are also the two whose managers run this behind an action button, which is
+    // all we can detect here. The KernelSU manager keeps the output on screen once the action
+    // ends, closing it only when launched from a shortcut, and MMRL keeps a log of its own;
+    // APatch's manager we have not read, so the pause stays.
+    if (getenv("MMRL") == nullptr && caller_fans_out()) sleep(5);
     return EXIT_SUCCESS;
 }

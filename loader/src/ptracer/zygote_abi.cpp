@@ -48,6 +48,15 @@ int wait_bounded(pid_t pid, int timeout_ms) {
     return -1;
 }
 
+/// A zygote the monitor caught at exec is parked in SIGSTOP until its injector seizes it,
+/// and traced by that injector while it works. A second injector would fight the first, and
+/// would fail with the library not yet mapped, which reads as a zygote needing a restart.
+bool injection_in_flight(pid_t pid) {
+    if (get_tracer_pid(pid) > 0) return true;
+    char state = get_process_state(pid);
+    return state == 'T' || state == 't';
+}
+
 }  // namespace
 
 ZygoteAbiManager::ZygoteAbiManager(AppMonitor& monitor, bool is_64bit)
@@ -191,20 +200,7 @@ bool ZygoteAbiManager::attach_running(pid_t pid, const char* mode_flag, const ch
     }
 }
 
-RearmResult ZygoteAbiManager::rearm() {
-    bool daemon_started = false;
-    if (!ensure_daemon_created(&daemon_started)) {
-        LOGE("rearm: daemon%s is not running", abi_name_);
-        return RearmResult::Failed;
-    }
-
-    // A daemon that outlived a module change still holds the previous snapshot, so have it
-    // rescan before anything is injected against it. One just forked needs none, and asking
-    // it anyway would block this thread in Connect()'s retries until it binds its socket.
-    if (!daemon_started && !zygiskd::RefreshModules()) {
-        LOGW("rearm: daemon%s could not refresh its module snapshot", abi_name_);
-    }
-
+RearmResult ZygoteAbiManager::rearm(bool ignore_disable) {
     // Every app process is a forked zygote that never execs, so the whole running system
     // reports this same executable: a zygote is one that init started and that argv says is
     // one. Parentage alone would also admit a daemon that backgrounded itself out of a boot
@@ -229,13 +225,29 @@ RearmResult ZygoteAbiManager::rearm() {
     }
 
     if (zygote_pids.empty()) {
-        // A normal boot reaches this on every post-mount, long before zygote exists. The
-        // monitor is already seized on init and will catch it the usual way.
+        // A normal boot reaches this on every service stage, long before zygote exists. The
+        // monitor is already seized on init and will catch it the usual way, with the daemon
+        // it forks then, which is why nothing is started above.
         LOGI("rearm: no running zygote for %s, nothing to attach", program_path_.c_str());
         return RearmResult::NoZygote;
     }
 
     status_.supported = true;
+
+    bool daemon_started = false;
+    if (!ensure_daemon_created(&daemon_started)) {
+        LOGE("rearm: daemon%s is not running", abi_name_);
+        return RearmResult::Failed;
+    }
+
+    // A daemon that outlived a module change still holds the previous snapshot, so have it
+    // rescan before anything is injected against it. One just forked needs none, and asking
+    // it anyway would block this thread in Connect()'s retries until it binds its socket --
+    // unless this rearm wants the disabled modules too, which its startup scan knew nothing
+    // about.
+    if ((!daemon_started || ignore_disable) && !zygiskd::RefreshModules(ignore_disable)) {
+        LOGW("rearm: daemon%s could not refresh its module snapshot", abi_name_);
+    }
 
     // A pid is handed out again once the kernel wraps around, so a confirmation is kept
     // only while the process it was given for is still one of the two that can earn one.
@@ -246,11 +258,15 @@ RearmResult ZygoteAbiManager::rearm() {
     }
 
     // The mapping lasts a zygote's whole life, so it tells a bare zygote from an injected
-    // one. What it cannot tell is whether that injection reached the daemon -- and one that
-    // did not leaves a zygote nothing can be injected over, hooks or no hooks.
-    bool armed_any = false, hooked_any = false, zygote_needs_restart = false;
+    // one. What it cannot tell is whether that injection reached the daemon -- and we do not
+    // inject over a mapping that is already there, hooks or no hooks.
+    bool armed_any = false, hooked_any = false, injecting_any = false;
+    bool zygote_needs_restart = false;
     for (auto pid : zygote_pids) {
-        if (!has_library_mapped(pid, "libzygisk.so")) {
+        if (injection_in_flight(pid)) {
+            LOGI("rearm: zygote (pid %d) has an injector of its own on it, leaving it alone", pid);
+            injecting_any = true;
+        } else if (!has_library_mapped(pid, "libzygisk.so")) {
             if (attach_running(pid, "--standalone", "zygote")) {
                 armed_any = true;
             } else {
@@ -271,8 +287,9 @@ RearmResult ZygoteAbiManager::rearm() {
     LOGI("rearm: zygote%s is %s", abi_name_, name_of(status_.zygote));
 
     // system_server is only reachable this way, being forked without an exec, where a
-    // normal boot specializes it inside an already-hooked zygote. Gate it on a zygote this
-    // rearm hooked: one hooked earlier has run server_specialize already, and firing it
+    // normal boot specializes it inside an already-hooked zygote. It therefore comes after
+    // zygote, never before. Gate it on a zygote this rearm hooked: one hooked earlier has
+    // run server_specialize already, and firing it
     // twice re-enters every module's lifecycle, while one needing a restart takes
     // system_server with it. The library cannot answer this, since a normally specialized
     // system_server unmaps it on the way out.
@@ -291,5 +308,6 @@ RearmResult ZygoteAbiManager::rearm() {
     monitor_.update_status();
 
     if (needs_restart) return RearmResult::NeedsRestart;
-    return armed_any ? RearmResult::Armed : RearmResult::AlreadyArmed;
+    if (armed_any) return RearmResult::Injected;
+    return hooked_any || !injecting_any ? RearmResult::AlreadyHooked : RearmResult::Injecting;
 }

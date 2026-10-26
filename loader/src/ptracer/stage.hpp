@@ -2,12 +2,12 @@
 
 #include <string_view>
 
-/// The boot stages, as the managers know them. Each one used to be a shell script of its
+/// The boot stages, as the frameworks know them. Each one used to be a shell script of its
 /// own, re-deriving the situation from environment variables; they are now shims that
-/// forward to `stage <name>`.
+/// forward to `stage <name>`. What each framework does with these stages, and what is
+/// running by the time it calls one, is documented at the top of stage.cpp.
 enum class Stage {
     PostFsData,
-    PostMount,
     Service,
     HotInstall,
     LateLoad,

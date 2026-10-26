@@ -26,6 +26,7 @@ use std::{
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
     process::Command,
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex, OnceLock, RwLock},
     thread,
 };
@@ -46,6 +47,9 @@ struct AppContext {
     /// has to be replaceable: an `Arc` per request keeps in-flight work on the set it
     /// started with, and retiring a snapshot drops its companions with it.
     modules: RwLock<Arc<Vec<Module>>>,
+    /// Whether a module's `disable` flag counts. Carried by the `RefreshModules` request
+    /// that asked for it, and kept for the rescans the daemon does on its own.
+    ignore_disable: AtomicBool,
     mount_manager: Arc<MountNamespaceManager>,
 }
 
@@ -56,13 +60,22 @@ impl AppContext {
         Arc::clone(&self.modules.read().unwrap())
     }
 
-    /// Rescans the module directory and publishes the result.
+    /// Rescans the module directory on the terms the request carries, which hold for the
+    /// rescans that follow until another request changes them.
+    fn refresh_modules(&self, ignore_disable: bool) -> Result<usize> {
+        self.ignore_disable.store(ignore_disable, Ordering::Relaxed);
+        self.rescan_modules()
+    }
+
+    /// Rescans for a refresh the daemon decides on by itself, such as a zygote restart.
     ///
     /// The new snapshot is built completely before anything is published, so a scan that
     /// fails leaves the daemon serving the previous set rather than an empty or partial
     /// one. Returns the number of modules now live.
-    fn refresh_modules(&self) -> Result<usize> {
-        let modules = load_modules().context("Failed to rescan the module directory")?;
+    fn rescan_modules(&self) -> Result<usize> {
+        let ignore_disable = self.ignore_disable.load(Ordering::Relaxed);
+        let modules =
+            load_modules(ignore_disable).context("Failed to rescan the module directory")?;
         let count = modules.len();
         let names: Vec<_> = modules.iter().map(|m| m.name.clone()).collect();
         // The status readout is written from what the daemon reports, so a refreshed set
@@ -93,7 +106,7 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
     // Lenient at startup where a refresh is strict: the daemon serves the heartbeat, the
     // process flags and the mount namespaces too, and all of those are worth having even
     // when the module set could not be read. A later `RefreshModules` can still pick it up.
-    let modules = load_modules().unwrap_or_else(|e| {
+    let modules = load_modules(false).unwrap_or_else(|e| {
         warn!("Starting with no modules: {:?}", e);
         Vec::new()
     });
@@ -102,6 +115,7 @@ pub fn main(tmp_path: Option<&str>) -> Result<()> {
     let mount_manager = Arc::new(MountNamespaceManager::new());
     let context = Arc::new(AppContext {
         modules: RwLock::new(Arc::new(modules)),
+        ignore_disable: AtomicBool::new(false),
         mount_manager,
     });
     let listener = create_daemon_socket()?;
@@ -194,13 +208,13 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
             // This is the only refresh a zygote restart gets, so a module installed while
             // the system was up would otherwise wait for a full reboot. A bare stop and
             // start runs no boot script at all, and `ksud soft-reboot` -- which does replay
-            // post-fs-data and post-mount -- stops zygote before it does, so post-mount.sh
-            // finds no live zygote and sends no rearm.
+            // the boot stages -- stops zygote before it does, so the service stage finds no
+            // live zygote and sends no rearm.
             //
             // It is also the only safe point to swap the set: a module handle is an index
             // into the list its process read at startup, and a zygote restart takes
             // system_server and every app holding one down with it.
-            if let Err(e) = context.refresh_modules() {
+            if let Err(e) = context.rescan_modules() {
                 warn!("Serving the previous module snapshot: {:?}", e);
             }
         }
@@ -209,8 +223,9 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
             utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &value.to_le_bytes())?;
         }
         DaemonSocketAction::RefreshModules => {
+            let ignore_disable = stream.read_u8()? != 0;
             // Synchronous: the rearm path waits for this before injecting anything.
-            let ok = match context.refresh_modules() {
+            let ok = match context.refresh_modules(ignore_disable) {
                 Ok(_) => 1u8,
                 Err(e) => {
                     warn!("Failed to refresh the module snapshot: {:?}", e);
@@ -328,13 +343,10 @@ fn get_arch() -> Result<&'static str> {
 }
 
 /// Scans the module directory, loads valid modules, and creates memfds for their libraries.
-fn load_modules() -> Result<Vec<Module>> {
+fn load_modules(ignore_disable: bool) -> Result<Vec<Module>> {
     let arch = get_arch()?;
     debug!("Daemon architecture: {arch}");
 
-    // `late-load.sh -i` hands this down through the monitor that forked us, for a run with
-    // no manager to clear the disable flags it left behind.
-    let ignore_disable = std::env::var("ZYGISK_IGNORE_DISABLE").is_ok_and(|v| !v.is_empty());
     if ignore_disable {
         info!("Loading modules that are marked disabled, as requested");
     }

@@ -11,13 +11,8 @@
 
 class AppMonitor;
 
-/**
- * @brief Manages all state and logic for a single target architecture (ABI).
- *
- * This class is responsible for tracking the status of Zygote and the helper
- * daemon for a specific ABI (e.g., 64-bit). It handles crash-loop detection,
- * daemon creation, and pre-injection safety checks.
- */
+/// Holds the state of one ABI's zygote and daemon: crash-loop detection, daemon creation
+/// and the pre-injection checks.
 class ZygoteAbiManager {
 public:
     static constexpr int CRASH_LOOP_RETRY_COUNT = 5;
@@ -29,12 +24,13 @@ public:
     const char* check_and_prepare_injection();
 
     /// Live-attach to this ABI's zygote and to system_server if they are up and not yet
-    /// hooked. Each attach is waited for, so the answer covers the heartbeat as well.
-    RearmResult rearm();
+    /// hooked. Each attach is waited for, so the answer covers the heartbeat as well. The
+    /// flag reaches the daemon's module scan, for the rearm that asked for it.
+    RearmResult rearm(bool ignore_disable);
 
     const Status& get_status() const;
 
-    /// Records that \p pid answered the daemon's heartbeat, the only proof that a process
+    /// Records that a process answered the daemon's heartbeat, the only proof that it
     /// carries working hooks.
     void notify_injected(pid_t pid);
     void set_daemon_info(std::string_view info);
@@ -46,8 +42,8 @@ public:
 private:
     bool is_in_crash_loop();
 
-    /// Starts this ABI's daemon if no live one is recorded. \p started reports whether this
-    /// call forked one, whose module snapshot is new and needs no refresh.
+    /// Starts this ABI's daemon if no live one is recorded. The started flag reports whether
+    /// this call forked one, whose module snapshot is new and needs no refresh.
     bool ensure_daemon_created(bool* started = nullptr);
 
     /// Runs `tracer trace <pid> <mode_flag>` for one running process and waits for it.

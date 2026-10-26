@@ -123,7 +123,7 @@ public:
 
     /// Refreshes the module snapshot and attaches to whatever is up and not yet hooked.
     /// The result is what the caller over the control socket is answered with.
-    RearmResult request_rearm();
+    RearmResult request_rearm(bool ignore_disable);
     void notify_init_detached();
 
     // Public Accessors for owned components
@@ -140,12 +140,6 @@ private:
         ~SocketHandler() override;
 
     private:
-        struct [[gnu::packed]] MsgHead {
-            Command cmd;
-            int length;
-            char data[0];
-        };
-
         /// Sends a rearm verdict back to the sender of the command, when it bound an
         /// address to receive one on.
         void answer(const struct sockaddr_un &peer, socklen_t peerlen, RearmResult result);

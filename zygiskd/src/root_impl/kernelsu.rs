@@ -138,13 +138,13 @@ const CMD_HOOK_MODE: usize = 0xC0DEAD1A;
 /// Represents detected variants of KernelSU, which had slightly different behavior
 /// in the legacy prctl implementation.
 #[derive(Clone, Copy, Debug)]
-enum KernelSuVariant {
+enum KernelSUVariant {
     Official,
     Next,
 }
 
 /// Lazily initialized variant for the legacy prctl method. Only used if fallback occurs.
-static LEGACY_VARIANT: OnceLock<KernelSuVariant> = OnceLock::new();
+static LEGACY_VARIANT: OnceLock<KernelSUVariant> = OnceLock::new();
 /// Lazily initialized capability flag for the legacy prctl method. Only used if fallback occurs.
 static LEGACY_SUPPORTS_MANAGER_UID: OnceLock<bool> = OnceLock::new();
 
@@ -408,9 +408,9 @@ fn init_legacy_variant_probe() {
             );
         }
         if mode[0] != 0 {
-            KernelSuVariant::Next
+            KernelSUVariant::Next
         } else {
-            KernelSuVariant::Official
+            KernelSUVariant::Official
         }
     });
 
@@ -490,8 +490,8 @@ fn uid_is_manager_prctl(uid: i32) -> bool {
     // Fallback: if the kernel doesn't support the direct query, check the known package
     // paths on disk based on the detected variant. This is less reliable.
     let manager_path = match LEGACY_VARIANT.get() {
-        Some(KernelSuVariant::Official) => "/data/user_de/0/me.weishu.kernelsu",
-        Some(KernelSuVariant::Next) => "/data/user_de/0/com.rifsxd.ksunext",
+        Some(KernelSUVariant::Official) => "/data/user_de/0/me.weishu.kernelsu",
+        Some(KernelSUVariant::Next) => "/data/user_de/0/com.rifsxd.ksunext",
         None => return false, // Should not happen if detect_version ran.
     };
     if let Ok(s) = rustix::fs::stat(manager_path) {

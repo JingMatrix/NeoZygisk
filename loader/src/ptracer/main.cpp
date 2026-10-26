@@ -81,9 +81,9 @@ static constexpr useconds_t kSendRetryDelayUs = 200 * 1000;
 // seconds of that. Worth waiting for: nothing outside the monitor knows what it achieved.
 static constexpr int kAnswerTimeoutSec = 30;
 
-/// Sends one command on \p sockfd, retrying while the monitor is still coming up. Returns
-/// false when none could be reached within the budget.
-static bool send_to_monitor(int sockfd, Command cmd) {
+/// Sends one message on an open socket, retrying while the monitor is still coming up.
+/// Returns false when none could be reached within the budget.
+static bool send_to_monitor(int sockfd, const void *msg, size_t len) {
     struct sockaddr_un addr{};
     socklen_t socklen;
     control_socket_addr(addr, socklen);
@@ -91,10 +91,10 @@ static bool send_to_monitor(int sockfd, Command cmd) {
     for (int attempt = 0; attempt < kSendRetries; ++attempt) {
         if (attempt > 0) usleep(kSendRetryDelayUs);
 
-        auto nsend = sendto(sockfd, (void *) &cmd, sizeof(cmd), 0, (sockaddr *) &addr, socklen);
-        if (nsend == static_cast<ssize_t>(sizeof(cmd))) return true;
+        auto nsend = sendto(sockfd, msg, len, 0, (sockaddr *) &addr, socklen);
+        if (nsend == static_cast<ssize_t>(len)) return true;
         if (nsend != -1) {
-            fprintf(stderr, "send %zd != %zu\n", nsend, sizeof(cmd));
+            fprintf(stderr, "send %zd != %zu\n", nsend, len);
             return false;
         }
         // ENOENT: the work directory has no socket yet. ECONNREFUSED: the file is there
@@ -115,12 +115,19 @@ bool send_control_command(Command cmd) {
         warn("socket");
         return false;
     }
-    bool sent = send_to_monitor(sockfd, cmd);
+    bool sent = send_to_monitor(sockfd, &cmd, sizeof(cmd));
     close(sockfd);
     return sent;
 }
 
-RearmResult send_rearm_command() {
+RearmResult send_rearm_command(bool ignore_disable) {
+    // One byte of payload, so the monitor applies the flag to this rearm and no other.
+    uint8_t msg[sizeof(CtlMessage) + 1] = {};
+    auto *head = reinterpret_cast<CtlMessage *>(msg);
+    head->cmd = REARM;
+    head->length = 1;
+    msg[sizeof(CtlMessage)] = ignore_disable ? 1 : 0;
+
     int sockfd = socket(PF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (sockfd == -1) {
         warn("socket");
@@ -136,7 +143,7 @@ RearmResult send_rearm_command() {
         warn("bind reply socket");
     } else if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1) {
         warn("set the reply timeout");
-    } else if (send_to_monitor(sockfd, REARM)) {
+    } else if (send_to_monitor(sockfd, msg, sizeof(msg))) {
         uint8_t answer = 0;
         auto nread = recv(sockfd, &answer, sizeof(answer), 0);
         if (nread == static_cast<ssize_t>(sizeof(answer)) &&
@@ -225,11 +232,11 @@ static void print_usage(const char *tool_name) {
             "\n"
             "  stage <name> [<options>]     run a boot stage, which is what each of the\n"
             "                               module's shell entry points forwards to:\n"
-            "                               post-fs-data, post-mount, service, hotinstall,\n"
-            "                               late-load\n"
+            "                               post-fs-data, service, hotinstall, late-load\n"
             "  status                       print what the monitor and the daemon report\n"
             "  monitor                      trace init and inject every zygote it forks\n"
-            "  ctl <start|stop|exit|rearm>  send one command to the running monitor\n"
+            "  ctl <start|stop|exit|rearm>  send one command to the running monitor, where\n"
+            "                               rearm also takes -i\n"
             "  trace <pid> [<mode>]         inject one running process, where mode is\n"
             "                               --spawn, --standalone or --system_server\n"
             "  version                      print the version\n"
@@ -237,7 +244,7 @@ static void print_usage(const char *tool_name) {
             "\n"
             "stage options, all of them late-load only except where noted:\n"
             "  -i, --ignore-disable         also load modules marked disabled, and run their\n"
-            "                               boot scripts (any stage that fans out)\n"
+            "                               boot scripts (any stage)\n"
             "  -p, --permissive             set SELinux permissive when the loaded policy is\n"
             "                               missing our rules\n"
             "  -s, --stop                   undo an arm: stop the monitor, and restart zygote\n"
@@ -322,8 +329,8 @@ static int handle_trace(int argc, char **argv) {
     // Success, reset the global PID so we don't accidentally send signals on exit
     g_traced_pid = 0;
     if (!hooked) {
-        // The library is in there and cannot be taken back out, so this is not a failure
-        // that can be retried: whoever asked for the injection has to restart the target.
+        // We neither unload the library we mapped nor inject over it, so this is not a
+        // failure to retry: whoever asked for the injection has to restart the target.
         fprintf(stderr,
                 "error: pid %d took the library but no daemon answered its heartbeat, so it "
                 "carries no hooks\n",
@@ -347,7 +354,17 @@ static int handle_ctl(int argc, char **argv) {
     // Rearm is the one command with something to report, and the monitor answers it once
     // the injection it asks for is done.
     if (action == "rearm"sv) {
-        auto result = send_rearm_command();
+        bool ignore_disable = false;
+        for (int i = 3; i < argc; ++i) {
+            const auto flag = std::string_view(argv[i]);
+            if (flag != "-i"sv && flag != "--ignore-disable"sv) {
+                fprintf(stderr, "error: unknown rearm option: '%s'\n", argv[i]);
+                return EXIT_FAILURE;
+            }
+            ignore_disable = true;
+        }
+
+        auto result = send_rearm_command(ignore_disable);
         if (result == RearmResult::Failed) {
             fprintf(stderr, "error: the rearm was not carried out\n");
             return EXIT_FAILURE;
@@ -413,8 +430,8 @@ static int handle_stage(int argc, char **argv) {
         }
     }
 
-    // Refuse what a stage cannot honour rather than ignoring it: both of these only mean
-    // something on the path that a root shell drives.
+    // Refuse what a stage cannot honour rather than ignoring it: these only mean something
+    // on the path that a root shell drives.
     if ((options.permissive || options.stop) && stage != Stage::LateLoad) {
         fprintf(stderr, "error: --permissive and --stop apply to the late-load stage only\n");
         return EXIT_FAILURE;

@@ -204,7 +204,7 @@ void AppMonitor::request_exit() {
     event_loop_.Stop();
 }
 
-RearmResult AppMonitor::request_rearm() {
+RearmResult AppMonitor::request_rearm(bool ignore_disable) {
     LOGI("rearm requested");
 
     // A rearm asks for injection, so lift a stop the monitor put itself into after a
@@ -213,7 +213,7 @@ RearmResult AppMonitor::request_rearm() {
         request_start();
     }
 
-    auto result = zygote_.rearm();
+    auto result = zygote_.rearm(ignore_disable);
     if (result == RearmResult::Failed) {
         request_stop("rearm failed");
         return result;
@@ -275,9 +275,9 @@ bool AppMonitor::SocketHandler::Init() {
 
 void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, uint32_t) {
     for (;;) {
-        buf_.resize(sizeof(MsgHead));
-        MsgHead &msg_header = *reinterpret_cast<MsgHead *>(buf_.data());
-        ssize_t nread = recv(sock_fd_, &msg_header, sizeof(MsgHead), MSG_PEEK | MSG_TRUNC);
+        buf_.resize(sizeof(CtlMessage));
+        CtlMessage &msg_header = *reinterpret_cast<CtlMessage *>(buf_.data());
+        ssize_t nread = recv(sock_fd_, &msg_header, sizeof(CtlMessage), MSG_PEEK | MSG_TRUNC);
         if (nread == -1) {
             if (errno == EAGAIN) break;
             PLOGE("SocketHandler: recv(peek)");
@@ -285,16 +285,16 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
         }
         ssize_t real_size;
         // Only these carry a payload; every other command is the bare enum value.
-        if (msg_header.cmd == Command::ZYGOTE_INJECTED ||
+        if (msg_header.cmd == Command::REARM || msg_header.cmd == Command::ZYGOTE_INJECTED ||
             msg_header.cmd == Command::DAEMON_SET_INFO ||
             msg_header.cmd == Command::DAEMON_SET_ERROR_INFO) {
-            if (static_cast<size_t>(nread) < sizeof(MsgHead)) {
+            if (static_cast<size_t>(nread) < sizeof(CtlMessage)) {
                 LOGE("SocketHandler: incomplete header for command %s (%d), size %zd",
                      name_of(msg_header.cmd), msg_header.cmd, nread);
                 recv(sock_fd_, buf_.data(), buf_.size(), 0);
                 continue;
             }
-            real_size = sizeof(MsgHead) + msg_header.length;
+            real_size = sizeof(CtlMessage) + msg_header.length;
         } else {
             if (static_cast<size_t>(nread) != sizeof(Command)) {
                 LOGE("SocketHandler: invalid size for command %s (%d), size %zd",
@@ -305,7 +305,7 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
             real_size = sizeof(Command);
         }
         buf_.resize(real_size);
-        MsgHead &full_msg = *reinterpret_cast<MsgHead *>(buf_.data());
+        CtlMessage &full_msg = *reinterpret_cast<CtlMessage *>(buf_.data());
         // Read the sender's address along with the message: a `ctl rearm` waits for the
         // verdict, and only an address can carry it back.
         struct sockaddr_un peer{};
@@ -330,9 +330,13 @@ void AppMonitor::SocketHandler::HandleEvent([[maybe_unused]] EventLoop &loop, ui
         case EXIT:
             monitor_.request_exit();
             break;
-        case REARM:
-            answer(peer, peerlen, monitor_.request_rearm());
+        case REARM: {
+            // The flag rides the request rather than the daemon's environment, so it holds
+            // for the rearm that asked for it and for nothing else.
+            bool ignore_disable = full_msg.length == 1 && full_msg.data[0] != 0;
+            answer(peer, peerlen, monitor_.request_rearm(ignore_disable));
             break;
+        }
         case ZYGOTE_INJECTED: {
             // The daemon names the process whose heartbeat it answered, since that is the
             // only hooked process it can vouch for.

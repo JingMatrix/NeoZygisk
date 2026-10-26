@@ -747,6 +747,19 @@ bool has_library_mapped(pid_t pid, std::string_view suffix) {
 /**
  * @brief Reads the tracer pid from /proc/[pid]/status.
  */
+char get_process_state(pid_t pid) {
+    std::string path = "/proc/" + std::to_string(pid) + "/status";
+    auto file = std::unique_ptr<FILE, decltype(&fclose)>(fopen(path.c_str(), "re"), &fclose);
+    if (file == nullptr) return '\0';
+
+    char line[256];
+    while (fgets(line, sizeof(line), file.get()) != nullptr) {
+        char state = '\0';
+        if (sscanf(line, "State: %c", &state) == 1) return state;
+    }
+    return '\0';
+}
+
 pid_t get_tracer_pid(pid_t pid) {
     std::string path = "/proc/" + std::to_string(pid) + "/status";
     auto file = std::unique_ptr<FILE, decltype(&fclose)>(fopen(path.c_str(), "re"), &fclose);

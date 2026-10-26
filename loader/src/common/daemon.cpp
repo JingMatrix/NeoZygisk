@@ -164,7 +164,7 @@ void SystemServerStarted() {
     }
 }
 
-bool RefreshModules() {
+bool RefreshModules(bool ignore_disable) {
     // Same retry budget as PingHeartbeat: a rearm can reach here immediately after the
     // monitor forked the daemon, before it has bound its socket, and the whole point of
     // this call is that nothing is injected until the snapshot is known to be current.
@@ -173,7 +173,8 @@ bool RefreshModules() {
         PLOGE("request RefreshModules");
         return false;
     }
-    if (!socket_utils::write_u8(fd, (uint8_t) SocketAction::RefreshModules)) {
+    if (!socket_utils::write_u8(fd, (uint8_t) SocketAction::RefreshModules) ||
+        !socket_utils::write_u8(fd, ignore_disable ? 1 : 0)) {
         PLOGE("request RefreshModules");
         return false;
     }
