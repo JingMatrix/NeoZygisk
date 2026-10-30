@@ -52,3 +52,8 @@ private:
 };
 
 int parse_int(std::string_view s);
+
+// Nothing clears task->ptrace_message before Linux 5.3, so the pid a ptrace event stores there
+// stays readable through PTRACE_GETEVENTMSG, in that task and in every child forked from it.
+// From 5.3 ptrace_report_syscall() zeroes it when the tracee resumes, and 5.19 every stop does.
+bool kernel_keeps_ptrace_message();

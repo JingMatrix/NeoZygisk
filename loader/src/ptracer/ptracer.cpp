@@ -22,6 +22,7 @@
 #include "daemon.hpp"
 #include "logging.hpp"
 #include "main.hpp"
+#include "misc.hpp"
 #include "utils.hpp"
 
 /**
@@ -498,6 +499,17 @@ static bool perform_injection(int pid, TraceMode mode, bool *hooked) {
     return inject_before_start(pid, lib_path.c_str(), mode, hooked);
 }
 
+// The injector scrubs task->ptrace_message with a seccomp event, which the kernel raises only
+// for a tracer that asked for it: without this flag it answers -ENOSYS and skips the event.
+// Kept out of the attach itself, since a kernel that refuses the flag would refuse the attach
+// with it, and losing the scrub beats losing the injection.
+static void arm_seccomp_events(int pid, int options) {
+    if (!kernel_keeps_ptrace_message()) return;
+    if (ptrace(PTRACE_SETOPTIONS, pid, 0, options | PTRACE_O_TRACESECCOMP) == -1) {
+        PLOGE("set PTRACE_O_TRACESECCOMP on pid %d", pid);
+    }
+}
+
 /**
  * @brief Executes the GKI 2.0 Workaround and detaches.
  *
@@ -570,6 +582,8 @@ static bool trace_with_seize(int pid, TraceMode mode, bool *hooked) {
                                       : STOPPED_WITH(SIGSTOP, PTRACE_EVENT_STOP);
 
     if (valid_stop) {
+        arm_seccomp_events(pid, options);
+
         // 1. Inject Payload
         if (!perform_injection(pid, mode, hooked)) {
             BAIL_AND_DETACH
@@ -656,10 +670,12 @@ static bool trace_with_attach(int pid, TraceMode mode, bool *hooked) {
     // Classic ATTACH results in a STOPPED status with SIGSTOP.
     // It does NOT use PTRACE_EVENT_STOP in the status bits usually.
     if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP) {
-        if (mode == TraceMode::SPAWN) {
+        int options = mode == TraceMode::SPAWN ? PTRACE_O_EXITKILL : 0;
+        if (options != 0) {
             // Set EXITKILL for parity with SEIZE
-            ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_EXITKILL);
+            ptrace(PTRACE_SETOPTIONS, pid, 0, options);
         }
+        arm_seccomp_events(pid, options);
 
         // 1. Inject Payload
         if (!perform_injection(pid, mode, hooked)) {
