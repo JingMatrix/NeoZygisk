@@ -3,6 +3,7 @@
 
 #include "elf_util.h"
 #include "logging.hpp"
+#include "zn_hook.hpp"
 
 #if defined(__riscv)
 #include <dobby_compat.h>
@@ -39,88 +40,19 @@ namespace zn {
 
 namespace {
 
-std::mutex g_hook_mutex;
-std::set<uintptr_t> g_hooked;
-
 int api_pltHook(void* base, const char* symbol, void* hook, void** original) {
     if (!base || !symbol || !hook) return ZN_FAILED;
-
-    LOGI("ZN pltHook base=%p symbol=%s", base, symbol);
-    const uintptr_t b = reinterpret_cast<uintptr_t>(base);
-    auto maps = parseMaps("self");
-    const MapEntry* target_entry = nullptr;
-    for (const auto& m : maps) {
-        bool is_load_base = m.start >= m.offset && b == m.start - m.offset;
-        if ((b >= m.start && b < m.end) || is_load_base) {
-            if (m.inode == 0) continue;
-            for (const auto& h : maps) {
-                if (h.inode == m.inode && h.dev == m.dev && h.offset == 0) {
-                    target_entry = &h;
-                    break;
-                }
-            }
-            if (!target_entry) target_entry = &m;
-            break;
-        }
-    }
-
-    if (!target_entry) {
-        LOGE("ZN pltHook %s: base %p not found in maps", symbol, base);
-        return ZN_FAILED;
-    }
-
-    void* backup = nullptr;
-    if (!lsplt::RegisterHook(target_entry->dev, target_entry->inode, symbol, hook, &backup)) {
-        LOGE("ZN pltHook %s: RegisterHook failed", symbol);
-        return ZN_FAILED;
-    }
-    if (!lsplt::CommitHook()) {
-        LOGE("ZN pltHook %s: CommitHook failed", symbol);
-        return ZN_FAILED;
-    }
-    if (!backup) {
-        LOGE("ZN pltHook %s: symbol not found in PLT (backup is null)", symbol);
-        return ZN_FAILED;
-    }
-    if (original) *original = backup;
-    return ZN_SUCCESS;
+    return zn::hook::pltHook(base, symbol, hook, original) ? ZN_SUCCESS : ZN_FAILED;
 }
 
 int api_inlineHook(void* target, void* addr, void** original) {
     if (!target || !addr) return ZN_FAILED;
-
-    const uintptr_t t = reinterpret_cast<uintptr_t>(target);
-    {
-        std::lock_guard<std::mutex> lk(g_hook_mutex);
-        if (!g_hooked.insert(t).second) {
-            LOGW("ZN inlineHook %p already hooked", target);
-            return ZN_FAILED;
-        }
-    }
-
-    if (DobbyHook(target, reinterpret_cast<dobby_dummy_func_t>(addr),
-                  reinterpret_cast<dobby_dummy_func_t*>(original)) != RT_SUCCESS) {
-        LOGE("ZN inlineHook %p: DobbyHook failed", target);
-        std::lock_guard<std::mutex> lk(g_hook_mutex);
-        g_hooked.erase(t);
-        return ZN_FAILED;
-    }
-    return ZN_SUCCESS;
+    return zn::hook::inlineHook(target, addr, original) ? ZN_SUCCESS : ZN_FAILED;
 }
 
 int api_inlineUnhook(void* target) {
     if (!target) return ZN_FAILED;
-
-    const uintptr_t t = reinterpret_cast<uintptr_t>(target);
-    {
-        std::lock_guard<std::mutex> lk(g_hook_mutex);
-        if (g_hooked.find(t) == g_hooked.end()) return ZN_FAILED;
-    }
-    if (DobbyDestroy(target) != RT_SUCCESS) return ZN_FAILED;
-
-    std::lock_guard<std::mutex> lk(g_hook_mutex);
-    g_hooked.erase(t);
-    return ZN_SUCCESS;
+    return zn::hook::inlineUnhook(target) ? ZN_SUCCESS : ZN_FAILED;
 }
 
 ZnSymbolResolver* api_newSymbolResolver(const char* path, void* base) {

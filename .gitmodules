@@ -7,3 +7,6 @@
 [submodule "loader/src/external/rv64hook"]
 	path = loader/src/external/rv64hook
 	url = https://github.com/eirv/riscv64-inline-hook.git
+[submodule "loader/src/external/bytehook"]
+	path = loader/src/external/bytehook
+	url = https://github.com/bytedance/bhook.git
