@@ -83,6 +83,9 @@ bool is_anonymous_memory_enabled() { return config_line_present("anonymous_memor
 // keeps the plain android_dlopen_ext path until the WebUI explicitly turns it on.
 bool is_custom_linker_enabled() { return config_line_present("custom_linker", "1"); }
 
+// PLT hook engine for ZN modules: bytehook (default) or lsplt.
+bool is_lsplt_engine_configured() { return config_line_present("plt_engine", "lsplt"); }
+
 static size_t page_size() {
     long sz = sysconf(_SC_PAGESIZE);
     return sz > 0 ? static_cast<size_t>(sz) : 4096;

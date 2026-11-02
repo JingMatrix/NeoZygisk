@@ -398,6 +398,10 @@ const ZygiskNextAPI* getApiForVersion(int target_api_version) {
     return &kApiNoSymbolResolver;
 }
 
+void initHookEngine() {
+    zn::hook::initPltEngineFromConfig();
+}
+
 bool isHyosSpawner() {
     char buf[PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);

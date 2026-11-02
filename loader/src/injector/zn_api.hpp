@@ -13,6 +13,9 @@ struct ZnModuleHandle {
 
 const ZygiskNextAPI* getApiForVersion(int target_api_version);
 
+// Initialize hook engine based on config.prop
+void initHookEngine();
+
 // HyperOS Runtime support
 bool isHyosSpawner();
 void initHyosRuntime();

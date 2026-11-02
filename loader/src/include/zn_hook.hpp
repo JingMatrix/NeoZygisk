@@ -26,12 +26,39 @@ namespace zn::hook {
 enum class PltEngine { kByteHook, kLsplt };
 
 inline PltEngine g_plt_engine = PltEngine::kByteHook;
+inline bool g_plt_engine_initialized = false;
 
 inline void setPltEngine(PltEngine e) {
     g_plt_engine = e;
+    g_plt_engine_initialized = true;
+}
+
+inline void initPltEngineFromConfig() {
+    FILE* fp = fopen("/data/adb/nyazygisk/config.prop", "r");
+    if (!fp) return;
+    char line[128];
+    while (fgets(line, sizeof(line), fp)) {
+        char* end = line + strlen(line);
+        while (end > line && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t')) {
+            *--end = '\0';
+        }
+        if (strcmp(line, "plt_engine=lsplt") == 0) {
+            g_plt_engine = PltEngine::kLsplt;
+            break;
+        } else if (strcmp(line, "plt_engine=bytehook") == 0) {
+            g_plt_engine = PltEngine::kByteHook;
+            break;
+        }
+    }
+    fclose(fp);
+    g_plt_engine_initialized = true;
+    LOGI("ZN hook: selected PLT engine: %s", g_plt_engine == PltEngine::kByteHook ? "ByteHook" : "LSPlt");
 }
 
 inline PltEngine getPltEngine() {
+    if (!g_plt_engine_initialized) {
+        initPltEngineFromConfig();
+    }
     return g_plt_engine;
 }
 
@@ -167,7 +194,7 @@ inline bool pltHook(void* base, const char* symbol, void* hook, void** original)
     LOGI("ZN pltHook base=%p symbol=%s (path=%s)", base, symbol, entry->path.c_str());
 
 #ifndef __riscv
-    if (g_plt_engine == PltEngine::kByteHook) {
+    if (getPltEngine() == PltEngine::kByteHook) {
         if (bytehookHook(entry->path, symbol, hook, original)) {
             return true;
         }
