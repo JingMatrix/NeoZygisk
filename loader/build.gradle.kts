@@ -52,6 +52,7 @@ android {
 
     externalNativeBuild.cmake {
         path("src/CMakeLists.txt")
+        version = "4.1.2"
         buildStagingDirectory = layout.buildDirectory.get().asFile
     }
 
