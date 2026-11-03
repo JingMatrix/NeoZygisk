@@ -34,7 +34,7 @@ inline void setPltEngine(PltEngine e) {
 }
 
 inline void initPltEngineFromConfig() {
-    FILE* fp = fopen("/data/adb/nyazygisk/config.prop", "r");
+    FILE* fp = fopen("/data/adb/nyazygisk/config.prop", "re");
     if (!fp) return;
     char line[128];
     while (fgets(line, sizeof(line), fp)) {

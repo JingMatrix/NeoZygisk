@@ -53,7 +53,7 @@ void clean_linker_trace(const char *path, size_t loaded_modules, size_t unloaded
 
 // True if config.prop contains a line matching exactly "key=value".
 static bool config_line_present(const char *key, const char *value) {
-    FILE *fp = fopen(kConfigPath, "r");
+    FILE *fp = fopen(kConfigPath, "re");
     if (fp == nullptr) return false;
 
     char needle[64];

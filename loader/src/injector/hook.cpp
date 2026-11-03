@@ -19,12 +19,23 @@
 
 #include "android_util.hpp"
 #include "daemon.hpp"
+#include "elf_util.h"
 #include "logging.hpp"
 #include "module.hpp"
 #include "tracer_pid.hpp"
 #include "zygisk.hpp"
 
 using namespace std;
+
+static std::vector<lsplt::MapInfo> safe_scan_map_infos() {
+    auto entries = znn::parseMaps("self");
+    std::vector<lsplt::MapInfo> result;
+    result.reserve(entries.size());
+    for (auto &e : entries) {
+        result.push_back(lsplt::MapInfo{e.start, e.end, e.perms, e.is_private, e.offset, e.dev, e.inode, std::move(e.path)});
+    }
+    return result;
+}
 
 // *********************
 // Zygisk Bootstrapping
@@ -97,38 +108,38 @@ HookContext *g_hook;
 static std::unordered_map<std::string, std::string> g_spoof_props;
 
 static void LoadPropConfig() {
-    int fd = open("/data/adb/modules/zygisksu/spoof.prop", O_RDONLY);
-    if (fd < 0) return;
-
-    char buf[4096];
-    std::string content;
-    ssize_t nread;
-    while ((nread = read(fd, buf, sizeof(buf))) > 0) {
-        content.append(buf, nread);
-    }
-    close(fd);
-
-    size_t pos = 0;
-    while (pos < content.size()) {
-        size_t eol = content.find('\n', pos);
-        if (eol == std::string::npos) eol = content.size();
-
-        // Trim leading whitespace
-        const char *start = content.data() + pos;
-        const char *end = content.data() + eol;
-        while (start < end && (*start == ' ' || *start == '\t' || *start == '\r')) start++;
-        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) end--;
-
-        std::string_view line(start, end - start);
-        if (!line.empty() && line[0] != '#') {
-            if (auto eq = line.find('='); eq != std::string_view::npos) {
-                g_spoof_props[std::string(line.substr(0, eq))] = std::string(line.substr(eq + 1));
-            }
+    int fd = open("/data/adb/modules/zygisksu/spoof.prop", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        char buf[4096];
+        std::string content;
+        ssize_t nread;
+        while ((nread = read(fd, buf, sizeof(buf))) > 0) {
+            content.append(buf, nread);
         }
-        pos = eol + 1;
+        close(fd);
+
+        size_t pos = 0;
+        while (pos < content.size()) {
+            size_t eol = content.find('\n', pos);
+            if (eol == std::string::npos) eol = content.size();
+
+            // Trim leading whitespace
+            const char *start = content.data() + pos;
+            const char *end = content.data() + eol;
+            while (start < end && (*start == ' ' || *start == '\t' || *start == '\r')) start++;
+            while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) end--;
+
+            std::string_view line(start, end - start);
+            if (!line.empty() && line[0] != '#') {
+                if (auto eq = line.find('='); eq != std::string_view::npos) {
+                    g_spoof_props[std::string(line.substr(0, eq))] = std::string(line.substr(eq + 1));
+                }
+            }
+            pos = eol + 1;
+        }
     }
 
-    int urandom_fd = open("/dev/urandom", O_RDONLY);
+    int urandom_fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (urandom_fd >= 0) {
         uint8_t rand_buf[32];
         if (read(urandom_fd, rand_buf, sizeof(rand_buf)) == sizeof(rand_buf)) {
@@ -159,7 +170,7 @@ DCL_HOOK_FUNC(static char *, strdup, const char *str) {
             bool expected = false;
             if (zygote_hooked.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
                 g_hook->hook_zygote_jni();
-                g_hook->cached_map_infos = lsplt::MapInfo::Scan();
+                g_hook->cached_map_infos = safe_scan_map_infos();
             }
         }
     }
@@ -417,7 +428,7 @@ void HookContext::hook_plt() {
     ino_t android_runtime_inode = 0;
     dev_t android_runtime_dev = 0;
 
-    cached_map_infos = lsplt::MapInfo::Scan();
+    cached_map_infos = safe_scan_map_infos();
     for (auto &map : cached_map_infos) {
         if (map.path.ends_with("/libandroid_runtime.so")) {
             android_runtime_inode = map.inode;
@@ -468,7 +479,7 @@ void HookContext::hook_unloader() {
     ino_t art_inode = 0;
     dev_t art_dev = 0;
 
-    cached_map_infos = lsplt::MapInfo::Scan();
+    cached_map_infos = safe_scan_map_infos();
     for (auto &map : cached_map_infos) {
         if (map.path.ends_with("/libart.so")) {
             art_inode = map.inode;
