@@ -213,7 +213,8 @@ fn handle_connection(mut stream: UnixStream, context: Arc<AppContext>) -> Result
             utils::unix_datagram_sendto(CONTROLLER_SOCKET.get().unwrap(), &value.to_le_bytes())?;
         }
         DaemonSocketAction::ZygoteRestart => {
-            info!("Zygote restarted, dropping companions and rescanning modules.");
+            info!("Zygote restarted, dropping companions, resetting mount namespaces, and rescanning modules.");
+            context.mount_manager.reset();
             // Drop the companions first and unconditionally: they served a framework that
             // no longer exists, and leaving it to the snapshot swap would strand them if
             // the rescan failed.

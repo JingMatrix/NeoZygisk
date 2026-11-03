@@ -40,17 +40,15 @@ log -p i -t "zygisk-sh" "late-load: bootstrapping NyaZygisk on a running system"
 # on it for the rest of the session.
 . "$MODDIR/zygisk-init.sh" </dev/null >/dev/null 2>&1
 
-# ksud exports KSU and apd exports APATCH to every stage script they run, and both go on to
-# run post-mount.sh and each module's service.sh themselves. Neither being set means this
-# script was started from a root shell on a build with no root framework, such as AOSP
-# userdebug, where nothing else ever will.
+# In late-load, neither ksud nor apd triggers post-mount.sh because the system is already booted.
+# We must always run post-mount.sh to send `ctl rearm` and attach running zygote & system_server.
+sh "$MODDIR/post-mount.sh"
+
+# ksud and apd run each module's service.sh themselves.
+# If neither is set (e.g. userdebug root shell or manual temp root), run service.sh here.
 if [ "$KSU" ] || [ "$APATCH" ]; then
   exit 0
 fi
 
-log -p i -t "zygisk-sh" "late-load: no root framework, running the remaining stages"
-
-# In the order a manager would: the rearm first, so the injection is armed before module
-# daemons start looking for it, then the service stage that starts them.
-sh "$MODDIR/post-mount.sh"
+log -p i -t "zygisk-sh" "late-load: no root framework, running the service stage"
 sh "$MODDIR/service.sh"
