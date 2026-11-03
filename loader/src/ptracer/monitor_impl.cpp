@@ -802,8 +802,9 @@ bool AppMonitor::SigChldHandler::handleExecEvent(int pid, int &status) {
 
             handled = true;
         } else {
-            LOGE("target %d failed to enter SIGSTOP, status: %s", pid,
+            LOGE("target %d failed to enter SIGSTOP, status: %s; detaching to avoid hang", pid,
                  parse_status(status).c_str());
+            ptrace(PTRACE_DETACH, pid, 0, SIGCONT);
         }
 
     } while (false);

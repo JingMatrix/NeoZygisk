@@ -14,7 +14,7 @@ use std::ffi::CString;
 use std::fs;
 use std::io::Error;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use crate::root_impl;
 
@@ -67,20 +67,20 @@ pub fn switch_mount_namespace(pid: i32) -> Result<()> {
 /// This manager is responsible for creating and holding onto file descriptors
 /// that represent specific mount namespaces, preventing them from being destroyed.
 pub struct MountNamespaceManager {
-    clean_mnt_ns_fd: OnceLock<OwnedFd>,
-    root_mnt_ns_fd: OnceLock<OwnedFd>,
+    clean_mnt_ns_fd: RwLock<Option<OwnedFd>>,
+    root_mnt_ns_fd: RwLock<Option<OwnedFd>>,
 }
 
 impl MountNamespaceManager {
     /// Creates a new, empty `MountNamespaceManager`.
     pub fn new() -> Self {
         Self {
-            clean_mnt_ns_fd: OnceLock::new(),
-            root_mnt_ns_fd: OnceLock::new(),
+            clean_mnt_ns_fd: RwLock::new(None),
+            root_mnt_ns_fd: RwLock::new(None),
         }
     }
 
-    fn get_namespace_storage(&self, namespace_type: MountNamespace) -> &OnceLock<OwnedFd> {
+    fn get_namespace_storage(&self, namespace_type: MountNamespace) -> &RwLock<Option<OwnedFd>> {
         match namespace_type {
             MountNamespace::Clean => &self.clean_mnt_ns_fd,
             MountNamespace::Root => &self.root_mnt_ns_fd,
@@ -89,9 +89,20 @@ impl MountNamespaceManager {
 
     /// Gets the cached file descriptor for a given namespace type, if it exists.
     pub fn get_namespace_fd(&self, namespace_type: MountNamespace) -> Option<RawFd> {
-        self.get_namespace_storage(namespace_type)
-            .get()
-            .map(|fd| fd.as_raw_fd())
+        let storage = self.get_namespace_storage(namespace_type);
+        let guard = storage.read().ok()?;
+        guard.as_ref().map(|fd| fd.as_raw_fd())
+    }
+
+    /// Resets cached namespace file descriptors (e.g. on soft reboot / Zygote restart).
+    pub fn reset(&self) {
+        if let Ok(mut guard) = self.clean_mnt_ns_fd.write() {
+            *guard = None;
+        }
+        if let Ok(mut guard) = self.root_mnt_ns_fd.write() {
+            *guard = None;
+        }
+        debug!("MountNamespaceManager: reset cached mount namespaces");
     }
 
     /// Caches a handle to a specific mount namespace (`Clean` or `Root`).
@@ -100,9 +111,12 @@ impl MountNamespaceManager {
     /// * `pid` - The PID of a process currently in the target mount namespace.
     /// * `namespace_type` - The type of namespace to save.
     pub fn save_mount_namespace(&self, pid: i32, namespace_type: MountNamespace) -> Result<RawFd> {
-        let ns_fd_cell = self.get_namespace_storage(namespace_type);
-        if let Some(fd) = ns_fd_cell.get() {
-            return Ok(fd.as_raw_fd());
+        let storage = self.get_namespace_storage(namespace_type);
+        {
+            let guard = storage.read().map_err(|e| anyhow::anyhow!("poisoned lock: {}", e))?;
+            if let Some(fd) = guard.as_ref() {
+                return Ok(fd.as_raw_fd());
+            }
         }
 
         // Create a pipe for synchronization between parent and child.
@@ -161,9 +175,8 @@ impl MountNamespaceManager {
                 }
 
                 let raw_fd = ns_file.as_raw_fd();
-                ns_fd_cell
-                    .set(ns_file.into())
-                    .map_err(|_| anyhow::anyhow!("Failed to set OnceLock for namespace FD"))?;
+                let mut guard = storage.write().map_err(|e| anyhow::anyhow!("poisoned lock: {}", e))?;
+                *guard = Some(ns_file.into());
 
                 trace!("{:?} namespace cached as FD {}", namespace_type, raw_fd);
                 Ok(raw_fd)

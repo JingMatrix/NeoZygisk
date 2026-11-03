@@ -66,7 +66,10 @@ ZygoteAbiManager::ZygoteAbiManager(AppMonitor& monitor, bool is_64bit)
 
 const Status& ZygoteAbiManager::get_status() const { return status_; }
 
-void ZygoteAbiManager::notify_injected() { status_.zygote_injected = true; }
+void ZygoteAbiManager::notify_injected() {
+    status_.zygote_injected = true;
+    counter.count = 0;
+}
 
 void ZygoteAbiManager::set_daemon_info(std::string_view info) {
     status_.daemon_info = without_trailing_nuls(info);
