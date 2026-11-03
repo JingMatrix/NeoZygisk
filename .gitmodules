@@ -7,3 +7,7 @@
 [submodule "loader/src/external/rv64hook"]
 	path = loader/src/external/rv64hook
 	url = https://github.com/eirv/riscv64-inline-hook.git
+[submodule "loader/src/external/bhook"]
+	path = loader/src/external/bhook
+	url = https://github.com/Nk-Be/bhook.git
+	branch = standalone

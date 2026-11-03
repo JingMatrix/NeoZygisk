@@ -24,6 +24,7 @@
 #include "solist.hpp"
 #include "misc.hpp"
 #include "zygisk.hpp"
+#include "zn_api.hpp"
 
 // Structure for the getdents64 syscall
 struct linux_dirent64 {
@@ -479,6 +480,7 @@ void ZygiskContext::nativeSpecializeAppProcess_pre() {
     process = env->GetStringUTFChars(args.app->nice_name, nullptr);
     LOGV("pre specialize [%s]", process);
     g_hook->anonymous_memory_enabled = is_anonymous_memory_enabled();
+    zn::initHookEngine();
     // App specialize does not check FD
     flags |= SKIP_CLOSE_LOG_PIPE;
     app_specialize_pre();

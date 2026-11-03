@@ -53,6 +53,8 @@ const I18N = {
     anonymous_memory_hint: "Hide module mappings after specialization",
     custom_linker: "Custom linker",
     custom_linker_hint: "Load modules without the system linker (experimental)",
+    plt_engine: "PLT hook engine",
+    plt_engine_hint: "Hook implementation for ZN modules",
     app_exclude: "App exclusion",
     app_exclude_hint: "Checked user apps load no Zygisk modules. System apps cannot be excluded. Changes take effect the next time the app starts.",
     exclude_unmount: "Unmount for excluded apps",
@@ -113,6 +115,8 @@ const I18N = {
     anonymous_memory_hint: "特化後隱藏模組的記憶體映射",
     custom_linker: "自訂鏈接器",
     custom_linker_hint: "不經過系統鏈接器載入模組（實驗性）",
+    plt_engine: "PLT Hook 引擎",
+    plt_engine_hint: "ZN 模組的 PLT Hook 實現",
     app_exclude: "應用排除",
     app_exclude_hint: "勾選的使用者應用不載入任何 Zygisk 模組。系統應用無法排除；變更於該應用下次啟動時生效。",
     exclude_unmount: "同時卸載模組掛載",
@@ -173,6 +177,8 @@ const I18N = {
     anonymous_memory_hint: "特化后隐藏模块的内存映射",
     custom_linker: "自定义链接器",
     custom_linker_hint: "不经过系统链接器加载模块（实验性）",
+    plt_engine: "PLT Hook 引擎",
+    plt_engine_hint: "ZN 模块的 PLT Hook 实现",
     app_exclude: "应用排除",
     app_exclude_hint: "勾选的用户应用不加载任何 Zygisk 模块。系统应用无法排除；更改在该应用下次启动时生效。",
     exclude_unmount: "同时卸载模块挂载",
@@ -193,6 +199,7 @@ const I18N = {
 
 let currentLang = pickInitialLanguage();
 let currentTab = "overview";
+let currentPltEngine = "bytehook";
 let toastTimer = null;
 let refreshing = false;
 // Last successful status snapshot, kept so a language switch re-renders without a shell round trip.
@@ -228,6 +235,21 @@ document.addEventListener("DOMContentLoaded", () => {
         // Storage may be unavailable in some WebViews; the choice then lasts this session.
       }
       applyTranslations();
+    }
+  });
+
+  $("plt-engine-select").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-engine]");
+    if (button && button.dataset.engine !== currentPltEngine) {
+      const newEngine = button.dataset.engine;
+      currentPltEngine = newEngine;
+      updatePltEngineButtons();
+      const result = await queueConfigWrite("plt_engine", () => newEngine);
+      if (result && result.code === 0) {
+        showToast("saved");
+      } else {
+        showToast("save_failed", true);
+      }
     }
   });
 
@@ -313,9 +335,16 @@ function applyTranslations() {
   document.querySelectorAll("#lang-select button").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.lang === currentLang));
   });
+  updatePltEngineButtons();
 
   renderOverview();
   renderApps();
+}
+
+function updatePltEngineButtons() {
+  document.querySelectorAll("#plt-engine-select button").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.engine === currentPltEngine));
+  });
 }
 
 function setTab(tab) {
@@ -758,6 +787,8 @@ async function refresh(showSuccessToast) {
       $("anonymous-memory").checked = config.anonymous_memory === "1";
       $("custom-linker").checked = config.custom_linker === "1";
       $("exclude-unmount").checked = config.exclude_unmount !== "0";
+      currentPltEngine = config.plt_engine === "lsplt" ? "lsplt" : "bytehook";
+      updatePltEngineButtons();
       savedExcluded = new Set(
         (config.exclude_apps || "").split(",").map((p) => p.trim()).filter(Boolean),
       );

@@ -469,6 +469,8 @@ svg {
 }
 
 .toggle-row + .setting-row,
+.setting-row + .setting-row,
+.setting-row + .toggle-row,
 .toggle-row + .toggle-row {
   border-top: 1px solid var(--line);
 }

@@ -108,6 +108,16 @@
           <span class="switch" aria-hidden="true"></span>
         </label>
         <div class="setting-row">
+          <span class="toggle-text">
+            <span class="strong" id="plt-engine-label" data-i18n="plt_engine">PLT hook engine</span>
+            <span class="hint" data-i18n="plt_engine_hint">Hook implementation for ZN modules</span>
+          </span>
+          <div class="segmented" id="plt-engine-select" role="group" aria-labelledby="plt-engine-label">
+            <button type="button" data-engine="bytehook">ByteHook</button>
+            <button type="button" data-engine="lsplt">LSPlt</button>
+          </div>
+        </div>
+        <div class="setting-row">
           <span class="strong" id="lang-label" data-i18n="language">Language</span>
           <div class="segmented" id="lang-select" role="group" aria-labelledby="lang-label">
             <button type="button" data-lang="en">EN</button>

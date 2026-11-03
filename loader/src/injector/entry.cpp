@@ -15,6 +15,7 @@ void entry(void* addr, size_t size, const char* path, TraceMode mode) {
     LOGI("zygisk library injected, version %s [mode: %d]", ZKSU_VERSION, mode);
 
     zygiskd::Init(path);
+    zn::initHookEngine();
 
     if (zn::isHyosSpawner()) {
         LOGI("Running inside hyos_spawner, initializing HyperOS Runtime");
