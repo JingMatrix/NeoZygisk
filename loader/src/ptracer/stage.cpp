@@ -630,7 +630,10 @@ int service(const StageOptions &options) {
 /// ksud runs this after moving the new module directory over the live one, while the old
 /// monitor still traces init through binaries that are gone, and runs no other stage. The
 /// zygote in front of us carries the previous version of the injector, so it is replaced
-/// rather than injected into.
+/// rather than injected into -- but only on a debug build, where whoever installed this is
+/// iterating on the injector and wants the new one in front of them. A release install arms
+/// the new monitor and stops there: restarting zygote takes every running app down with it,
+/// which is not what updating a module asked for, and an unannounced one reads as a crash.
 int hot_install(const StageOptions &) {
     if (module_disabled()) {
         SAY("NeoZygisk is marked disabled, leaving this system as it is");
@@ -644,16 +647,26 @@ int hot_install(const StageOptions &) {
     SAY("starting the new monitor");
     if (!install()) return EXIT_FAILURE;
 
-    // Waited for, so the restart below cannot land before the monitor can catch it. Together
-    // with the wait above this is at most 20 seconds, inside ksud's 30 second budget.
+    // The new monitor answering its control socket is what says this install took, so it is
+    // waited for whether or not a restart follows. On a debug build it also orders that
+    // restart, which must not land before the monitor can catch the zygote it replaces.
+    // Together with the wait above this is at most 20 seconds, inside ksud's 30 second
+    // budget.
     if (!wait_for_monitor()) {
         ERR("the new monitor did not take the control socket, NeoZygisk will start on the "
             "next boot");
         return EXIT_FAILURE;
     }
 
+#ifdef ZYGISK_DEBUG
     SAY("restarting zygote to load the new injector");
     restart_zygote();
+#else
+    // The monitor is armed, so the next zygote to start carries the new injector while the
+    // one running now keeps the old one. Said out loud because nothing else tells the two
+    // apart, and a reader otherwise cannot know which injector the apps on screen hold.
+    SAY("the new monitor is armed; zygote keeps the running injector until it restarts");
+#endif
     return EXIT_SUCCESS;
 }
 
