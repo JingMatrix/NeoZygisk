@@ -190,14 +190,36 @@ bool ZygiskContext::plt_hook_commit() {
 
 // -----------------------------------------------------------------
 
-static bool is_trace_marker_fd(int fd_dir, const char *fd_name) {
-    constexpr char trace_marker[] = "/sys/kernel/tracing/trace_marker";
-    constexpr char debug_trace_marker[] = "/sys/kernel/debug/tracing/trace_marker";
-    char target[sizeof(debug_trace_marker)];
-    ssize_t len = readlinkat(fd_dir, fd_name, target, sizeof(target));
-    if (len < 0 || static_cast<size_t>(len) >= sizeof(target)) return false;
-    target[len] = '\0';
-    return strcmp(target, trace_marker) == 0 || strcmp(target, debug_trace_marker) == 0;
+// Targets that a process forked from zygote is allowed to carry, taken from the
+// kPathAllowlist that AOSP's own descriptor check walks in
+// frameworks/base/core/jni/fd_utils.cpp. Its /dev/socket entries are left out:
+// a socket reads back from /proc/self/fd as socket:[inode] rather than as a
+// path, so no readlink can match one, and the framework detaches the sockets it
+// allows instead of carrying them into the child.
+static constexpr const char *kAllowedFdTargets[] = {
+    "/dev/null",
+    "/dev/urandom",
+    "/dev/ion",
+    "/dev/dri/renderD129",
+    "/dev/stune/foreground/tasks",
+    "/dev/blkio/tasks",
+    "/sys/kernel/tracing/trace_marker",
+    "/sys/kernel/debug/tracing/trace_marker",
+    "/system/framework/framework-res.apk",
+    "/metadata/aconfig/maps/system.package.map",
+    "/metadata/aconfig/maps/system.flag.map",
+    "/metadata/aconfig/boot/system.val",
+};
+
+// Longer than every target above, and long enough that a log line naming one we
+// do close stays worth reading.
+static constexpr size_t kFdTargetMax = 256;
+
+static bool is_allowed_fd_target(const char *target) {
+    for (const char *allowed : kAllowedFdTargets) {
+        if (strcmp(target, allowed) == 0) return true;
+    }
+    return false;
 }
 
 void ZygiskContext::sanitize_fds() {
@@ -241,18 +263,45 @@ void ZygiskContext::sanitize_fds() {
 
     // Close all forbidden fds to prevent crashing
     auto dir = open_dir("/proc/self/fd");
-    int dfd = dirfd(dir.get());
-    for (dirent *entry; (entry = readdir(dir.get()));) {
-        int fd = parse_int(entry->d_name);
-        if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) &&
-            fd != dfd) {
-            // Bionic may open trace_marker during module initialization and cache its fd.
-            // Closing it here leaves a stale cache that can write into a reused fd.
-            // Both trace_marker paths are also allowed by the framework's zygote FD checks.
-            if (is_trace_marker_fd(dfd, entry->d_name)) continue;
-            close(fd);
-        }
+    if (!dir) {
+        PLOGE("open /proc/self/fd");
+        LOGE("[%s] keeps every fd it was forked with", process ? process : "system_server");
+        return;
     }
+    int dfd = dirfd(dir.get());
+    [[maybe_unused]] int closed = 0, kept = 0;
+    // Logging from inside the loop is safe because procfs lists this directory
+    // in ascending fd order: a number the loop has yet to reach is still open,
+    // so it cannot be the one liblog is given for the socket it opens on the
+    // first line, and a number the loop has passed is never revisited.
+    for (dirent *entry; (entry = readdir(dir.get()));) {
+        // `.` and `..` do not parse as a number, and closing the -1 they used to
+        // yield was a no-op worth neither the syscall nor the line of log.
+        int fd = parse_int(entry->d_name);
+        if (fd < 0 || fd == dfd) continue;
+        if (static_cast<size_t>(fd) < allowed_fds.size() && allowed_fds[fd]) continue;
+
+        // readlinkat neither terminates the target nor says how long the real
+        // one was, so a longer target arrives truncated and matches nothing,
+        // which is the answer we want from it.
+        char target[kFdTargetMax] = "<unreadable>";
+        if (ssize_t len = readlinkat(dfd, entry->d_name, target, sizeof(target) - 1); len >= 0) {
+            target[len] = '\0';
+        }
+        // libc hands out some of these numbers from a cache it never
+        // revalidates, so closing one leaves the cache naming a number the next
+        // open takes over. Keep what the framework itself keeps.
+        if (is_allowed_fd_target(target)) {
+            LOGD("keeping fd %d, opened after the snapshot: %s", fd, target);
+            ++kept;
+            continue;
+        }
+        LOGD("closing fd %d: %s", fd, target);
+        close(fd);
+        ++closed;
+    }
+    LOGD("sanitized the fds of [%s]: %d closed, %d kept", process ? process : "system_server",
+         closed, kept);
 }
 
 bool ZygiskContext::exempt_fd(int fd) {
