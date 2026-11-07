@@ -216,6 +216,43 @@ bool ZygiskContext::plt_hook_commit() {
 
 // -----------------------------------------------------------------
 
+// Targets that a process forked from zygote is allowed to carry, in the order of
+// the kPathAllowlist that AOSP's own descriptor check walks in
+// frameworks/base/core/jni/fd_utils.cpp, so keeping the two in sync stays a
+// plain diff. Its /dev/socket entries are left out: a socket reads back from
+// /proc/self/fd as socket:[inode] rather than as a path, so no readlink can
+// match one, and the framework replaces the sockets it allows with /dev/null in
+// place rather than carrying them into the child.
+//
+// FileDescriptorAllowlist::IsAllowed() accepts more than this list through
+// prefix and suffix rules: framework and APEX jars, resource overlays, their
+// idmaps and ART's boot image memfd. Zygote opens those before our snapshot, so
+// they never reach this check, and the list mirrors the static allowlist alone
+// rather than growing a second copy of those rules.
+static constexpr const char *kAllowedFdTargets[] = {
+    "/dev/null",
+    "/sys/kernel/debug/tracing/trace_marker",
+    "/sys/kernel/tracing/trace_marker",
+    "/system/framework/framework-res.apk",
+    "/dev/urandom",
+    "/dev/ion",
+    "/dev/dri/renderD129",
+    "/dev/stune/foreground/tasks",
+    "/dev/blkio/tasks",
+    "/metadata/aconfig/maps/system.package.map",
+    "/metadata/aconfig/maps/system.flag.map",
+    "/metadata/aconfig/boot/system.val",
+};
+
+static constexpr size_t kFdTargetMax = 256;
+
+static bool is_allowed_fd_target(const char *target) {
+    for (const char *allowed : kAllowedFdTargets) {
+        if (strcmp(target, allowed) == 0) return true;
+    }
+    return false;
+}
+
 void ZygiskContext::sanitize_fds() {
     if (!is_child()) {
         return;
@@ -260,19 +297,32 @@ void ZygiskContext::sanitize_fds() {
     if (fd_dir >= 0) {
         char buf[4096];
         int nread;
+        [[maybe_unused]] int closed = 0, kept = 0;
         while ((nread = syscall(__NR_getdents64, fd_dir, buf, sizeof(buf))) > 0) {
             for (int bpos = 0; bpos < nread;) {
                 auto d = reinterpret_cast<struct linux_dirent64*>(buf + bpos);
                 if (d->d_name[0] >= '0' && d->d_name[0] <= '9') {
                     int fd = fast_atoi(d->d_name);
-                    if ((fd < 0 || static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd]) && fd != fd_dir) {
-                        close(fd);
+                    if (fd >= 0 && fd != fd_dir && (static_cast<size_t>(fd) >= allowed_fds.size() || !allowed_fds[fd])) {
+                        char target[kFdTargetMax] = "<unreadable>";
+                        if (ssize_t len = readlinkat(fd_dir, d->d_name, target, sizeof(target) - 1); len >= 0) {
+                            target[len] = '\0';
+                        }
+                        if (is_allowed_fd_target(target)) {
+                            LOGD("keeping fd %d, opened after snapshot: %s", fd, target);
+                            ++kept;
+                        } else {
+                            LOGD("closing fd %d: %s", fd, target);
+                            close(fd);
+                            ++closed;
+                        }
                     }
                 }
                 bpos += d->d_reclen;
             }
         }
         close(fd_dir);
+        LOGD("sanitized fds of [%s]: %d closed, %d kept", process ? process : "system_server", closed, kept);
     }
 }
 
