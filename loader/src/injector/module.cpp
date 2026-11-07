@@ -190,22 +190,29 @@ bool ZygiskContext::plt_hook_commit() {
 
 // -----------------------------------------------------------------
 
-// Targets that a process forked from zygote is allowed to carry, taken from the
-// kPathAllowlist that AOSP's own descriptor check walks in
-// frameworks/base/core/jni/fd_utils.cpp. Its /dev/socket entries are left out:
-// a socket reads back from /proc/self/fd as socket:[inode] rather than as a
-// path, so no readlink can match one, and the framework detaches the sockets it
-// allows instead of carrying them into the child.
+// Targets that a process forked from zygote is allowed to carry, in the order of
+// the kPathAllowlist that AOSP's own descriptor check walks in
+// frameworks/base/core/jni/fd_utils.cpp, so keeping the two in sync stays a
+// plain diff. Its /dev/socket entries are left out: a socket reads back from
+// /proc/self/fd as socket:[inode] rather than as a path, so no readlink can
+// match one, and the framework replaces the sockets it allows with /dev/null in
+// place rather than carrying them into the child.
+//
+// FileDescriptorAllowlist::IsAllowed() accepts more than this list through
+// prefix and suffix rules: framework and APEX jars, resource overlays, their
+// idmaps and ART's boot image memfd. Zygote opens those before our snapshot, so
+// they never reach this check, and the list mirrors the static allowlist alone
+// rather than growing a second copy of those rules.
 static constexpr const char *kAllowedFdTargets[] = {
     "/dev/null",
+    "/sys/kernel/debug/tracing/trace_marker",
+    "/sys/kernel/tracing/trace_marker",
+    "/system/framework/framework-res.apk",
     "/dev/urandom",
     "/dev/ion",
     "/dev/dri/renderD129",
     "/dev/stune/foreground/tasks",
     "/dev/blkio/tasks",
-    "/sys/kernel/tracing/trace_marker",
-    "/sys/kernel/debug/tracing/trace_marker",
-    "/system/framework/framework-res.apk",
     "/metadata/aconfig/maps/system.package.map",
     "/metadata/aconfig/maps/system.flag.map",
     "/metadata/aconfig/boot/system.val",
@@ -290,7 +297,7 @@ void ZygiskContext::sanitize_fds() {
         }
         // libc hands out some of these numbers from a cache it never
         // revalidates, so closing one leaves the cache naming a number the next
-        // open takes over. Keep what the framework itself keeps.
+        // open takes over. Keep what that allowlist keeps.
         if (is_allowed_fd_target(target)) {
             LOGD("keeping fd %d, opened after the snapshot: %s", fd, target);
             ++kept;
