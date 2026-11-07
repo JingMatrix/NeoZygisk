@@ -92,8 +92,8 @@ if [ "$KSU" ]; then
   ui_print "- Checking SELinux patches"
   if ! check_sepolicy "$TMPDIR/sepolicy.rule"; then
     ui_print "*********************************************************"
-    ui_print "! Unable to apply SELinux patches!"
-    ui_print "! Your kernel may not support SELinux patch fully"
+    ui_print "! ksud rejected our SELinux rules!"
+    ui_print "! Please report this along with your ksud version"
     abort    "*********************************************************"
   fi
 fi

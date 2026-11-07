@@ -91,6 +91,18 @@ androidComponents.onVariants { variant ->
         }
 
         doLast {
+            // ksud before v1.0.1 parses sepolicy.rule strictly with no notion of
+            // comments: a '#' line reaches PolicyStatement::parse, fails, and aborts
+            // the install (#176). No ksud ever reads them either way, since
+            // live_patch() parses non-strict, so the rationale stays in the source
+            // file and never ships. This runs before the hashes below are written.
+            val rule = moduleDir.get().file("sepolicy.rule").asFile
+            rule.writeText(
+                rule.readLines()
+                    .filterNot { it.isBlank() || it.trimStart().startsWith("#") }
+                    .joinToString(separator = "\n", postfix = "\n")
+            )
+
             fileTree(moduleDir).visit {
                 if (isDirectory) return@visit
                 val md = MessageDigest.getInstance("SHA-256")
