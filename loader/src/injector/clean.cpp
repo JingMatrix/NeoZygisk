@@ -46,31 +46,53 @@ void spoof_virtual_maps(const char *path, bool clear_write_permission) {
         if (strstr(map.path.c_str(), path)) {
             LOGV("spoofing entry path contaning string %s", map.path.c_str());
             // Create an anonymous mapping to hold a copy of the original data
-            void *copy = mmap(nullptr, size, PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+            void *copy =
+                mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
             if (copy == MAP_FAILED) {
                 LOGE("failed to backup block %s [%p, %p]", map.path.c_str(), addr,
                      (void *) map.end);
                 continue;
             }
-            // Ensure the original mapping is readable before copying
-            if ((map.perms & PROT_READ) == 0) {
-                mprotect(addr, size, PROT_READ);
+            // The segment is live until it is replaced, so widen its permissions to read it
+            // and narrow them back at once: whoever owns it may be running from it.
+            const bool widened = (map.perms & PROT_READ) == 0;
+            if (widened && mprotect(addr, size, map.perms | PROT_READ) == -1) {
+                PLOGE("make %s readable [%p, %p]", map.path.c_str(), addr, (void *) map.end);
+                munmap(copy, size);
+                continue;
             }
             memcpy(copy, addr, size);
-            // Overwrite the original mapping with our anonymous copy
-            if (mremap(copy, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, addr) == MAP_FAILED) {
-                LOGE("mremap failed for %s [%p, %p]", map.path.c_str(), addr, (void *) map.end);
+            if (widened) mprotect(addr, size, map.perms);
+            // Pages that carry code need the writes in memory before the first fetch from them.
+            if (map.perms & PROT_EXEC) {
+                __builtin___clear_cache(static_cast<char *>(copy),
+                                        static_cast<char *>(copy) + size);
             }
-            // The backup copy is now at the original address, we can unmap our temporary one.
-            // Note: The man page for mremap is ambiguous on whether the old mapping at 'copy'
-            // is unmapped. To be safe and avoid potential leaks, we explicitly unmap it.
-            munmap(copy, size);
-            // Restore the original permissions
-            mprotect(addr, size, map.perms);
+            // mremap carries the source permissions onto the address it lands on, and that is
+            // the only chance to set them: a segment that goes live without PROT_EXEC takes
+            // every call meant to repair it into code that can no longer be executed. A
+            // writable segment already carries them, and skipping the call keeps the span in
+            // which its owner's writes land on the pages we are about to drop as short as it
+            // can be.
+            if (map.perms != (PROT_READ | PROT_WRITE) && mprotect(copy, size, map.perms) == -1) {
+                PLOGE("set permissions on the copy of %s", map.path.c_str());
+                munmap(copy, size);
+                continue;
+            }
+            // Overwrite the original mapping with our anonymous copy. MREMAP_FIXED unmaps the
+            // source range, so the copy is gone once this succeeds and unmapping it ourselves
+            // would only take out whatever lands there next.
+            if (mremap(copy, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, addr) == MAP_FAILED) {
+                PLOGE("mremap failed for %s [%p, %p]", map.path.c_str(), addr, (void *) map.end);
+                munmap(copy, size);
+                continue;
+            }
             prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, size, "dalvik-DEX data");
         }
 
-        if (clear_write_permission && map.path.size() > 0 &&
+        // A named anonymous mapping belongs to no library, and the writable executable ones
+        // among them are the code caches that hooks run through.
+        if (clear_write_permission && map.path.size() > 0 && map.path[0] != '[' &&
             (map.perms & (PROT_READ | PROT_WRITE | PROT_EXEC)) ==
                 (PROT_READ | PROT_WRITE | PROT_EXEC)) {
             LOGV("clearing write permission for entry %s", map.path.c_str());
