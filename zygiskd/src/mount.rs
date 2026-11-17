@@ -114,11 +114,19 @@ impl MountNamespaceManager {
                 drop(pipe_reader); // Close the side of the pipe we don't use.
                 switch_mount_namespace(pid).unwrap();
 
+                // Always take a private copy of the target namespace, for Root as well as
+                // for Clean. `pid` is a freshly forked system_server, and the loader does
+                // not wait for this call, so at this point it may still share zygote's
+                // namespace or already own its private one, depending on timing. Caching
+                // the namespace itself would then sometimes cache zygote's live namespace,
+                // which Direct Zygote Unmounting later empties, and every app sent to
+                // "Root" would lose its root mounts. A copy is frozen as it is now, with
+                // the root mounts still in place, whichever namespace `pid` is in.
+                unsafe {
+                    rustix_thread::unshare_unsafe(rustix_thread::UnshareFlags::NEWNS).unwrap();
+                }
+
                 if namespace_type == MountNamespace::Clean {
-                    // Create a new, private mount namespace for ourselves.
-                    unsafe {
-                        rustix_thread::unshare_unsafe(rustix_thread::UnshareFlags::NEWNS).unwrap();
-                    }
                     // Unmount all root and module mounts.
                     Self::clean_mount_namespace().unwrap();
                 }
