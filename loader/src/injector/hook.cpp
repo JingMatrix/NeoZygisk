@@ -105,19 +105,38 @@ DCL_HOOK_FUNC(int, fork) { return (g_ctx && g_ctx->pid >= 0) ? g_ctx->pid : old_
 
 // Unmount stuffs in the process's private mount namespace
 DCL_HOOK_FUNC(static int, unshare, int flags) {
+    bool clean_child_after_unshare = false;
     if (g_ctx && (flags & CLONE_NEWNS) && !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE)) {
         bool should_unmount = !(g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) &&
                               g_ctx->flags & DO_REVERT_UNMOUNT;
         if (!should_unmount && g_hook->zygote_unmounted) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
         }
-        bool is_zygote_clean = g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0;
+        bool is_zygote_clean = g_hook->zygote_unmounted && g_hook->zygote_traces.empty();
         if (should_unmount && !is_zygote_clean) {
-            ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
+            // The child is about to get its own mount namespace. Unmount the module
+            // traces there instead of switching to the cached clean namespace, which
+            // is observable by apps that inspect their mount namespace.
+            clean_child_after_unshare = true;
         }
     }
 
     int res = old_unshare(flags);
+
+    if (res == 0 && clean_child_after_unshare && g_ctx && g_hook) {
+        for (const auto &trace : g_hook->zygote_traces) {
+            if (umount2(trace.target.c_str(), MNT_DETACH) != 0 && errno != ENOENT &&
+                errno != EINVAL) {
+                PLOGE("unmount %s", trace.target.c_str());
+            }
+        }
+        // If traces survived (e.g. a mount we may not detach), fall back to the cached
+        // clean namespace so modules stay hidden.
+        if (!check_zygote_traces(g_ctx->info_flags).empty()) {
+            ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
+        }
+    }
+
     errno = 0;  // Restore errno back to 0
     return res;
 }
