@@ -76,6 +76,30 @@ def child_test(parent):
     assert open(parent + "/target/file").read() == "patched"
 
 
+def incoming_mount_test(parent):
+    """MS_SLAVE must still allow new parent mounts to reach the child."""
+    ready_read, ready_write = os.pipe()
+    go_read, go_write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        try:
+            call("unshare", CLONE_NEWNS)
+            mount(None, "/", MS_SLAVE | MS_REC)
+            os.write(ready_write, b"1")
+            os.read(go_read, 1)
+            assert mounted(parent + "/incoming"), "incoming mount lost"
+            assert open(parent + "/incoming/file").read() == "factory"
+            os._exit(0)
+        except BaseException:
+            import traceback
+            traceback.print_exc()
+            os._exit(1)
+    os.read(ready_read, 1)
+    mount(os.fsencode(parent + "/source"), parent + "/incoming", MS_BIND)
+    os.write(go_write, b"1")
+    assert os.waitpid(pid, 0)[1] == 0
+
+
 with open("/proc/self/uid_map") as stream:
     if stream.read().split() == ["0", "0", "4294967295"]:
         raise SystemExit("Use an unshared user namespace as documented")
@@ -84,7 +108,7 @@ mount(None, "/", MS_PRIVATE | MS_REC)
 with tempfile.TemporaryDirectory(prefix="neozygisk-mount-test-") as root:
     mount(b"tmpfs", root, filesystem=b"tmpfs")
     try:
-        for name in ("source", "target"):
+        for name in ("source", "target", "incoming"):
             os.mkdir(root + "/" + name)
             with open(root + "/" + name + "/file", "w") as stream:
                 stream.write("factory")
@@ -92,6 +116,7 @@ with tempfile.TemporaryDirectory(prefix="neozygisk-mount-test-") as root:
             stream.write("patched")
         mount(None, root, MS_SHARED)
         child_test(root)
-        print("PASS: clean cache isolated; child cleaned; parent mounts preserved")
+        incoming_mount_test(root)
+        print("PASS: cache isolated; child cleaned; parent preserved; incoming events retained")
     finally:
         call("umount2", os.fsencode(root), MNT_DETACH)
