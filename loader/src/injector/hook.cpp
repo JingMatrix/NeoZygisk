@@ -105,19 +105,45 @@ DCL_HOOK_FUNC(int, fork) { return (g_ctx && g_ctx->pid >= 0) ? g_ctx->pid : old_
 
 // Unmount stuffs in the process's private mount namespace
 DCL_HOOK_FUNC(static int, unshare, int flags) {
+    bool clean_child = false;
     if (g_ctx && (flags & CLONE_NEWNS) && !(g_ctx->flags & SERVER_FORK_AND_SPECIALIZE)) {
         bool should_unmount = !(g_ctx->info_flags & (PROCESS_IS_MANAGER | PROCESS_GRANTED_ROOT)) &&
                               g_ctx->flags & DO_REVERT_UNMOUNT;
         if (!should_unmount && g_hook->zygote_unmounted) {
             ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Root);
         }
-        bool is_zygote_clean = g_hook->zygote_unmounted && g_hook->zygote_traces.size() == 0;
-        if (should_unmount && !is_zygote_clean) {
-            ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean);
-        }
+        // Zygote may receive new module mounts after its initial cleanup. Its
+        // cached trace list cannot tell us whether this child is still clean.
+        clean_child = should_unmount;
     }
 
     int res = old_unshare(flags);
+    if (res == 0 && clean_child) {
+        auto traces = check_zygote_traces(g_ctx->info_flags);
+        if (!traces.empty()) {
+            // unshare copies shared propagation flags too. Prevent our detach
+            // operations from propagating back to zygote or other processes,
+            // while retaining incoming system/storage mount events.
+            bool cleaned = mount(nullptr, "/", nullptr, MS_SLAVE | MS_REC, nullptr) == 0;
+            if (!cleaned) {
+                PLOGE("make child mount namespace slave");
+            } else {
+                for (const auto &trace : traces) {
+                    if (umount2(trace.target.c_str(), MNT_DETACH) != 0 &&
+                        errno != ENOENT && errno != EINVAL) {
+                        PLOGE("unmount %s", trace.target.c_str());
+                    }
+                }
+                cleaned = check_zygote_traces(g_ctx->info_flags).empty();
+            }
+            if (!cleaned &&
+                ZygiskContext::update_mount_namespace(zygiskd::MountNamespace::Clean)) {
+                // Keep the legacy fallback, but do not leave the app sharing
+                // the daemon's cached namespace after Android's unshare.
+                res = old_unshare(flags);
+            }
+        }
+    }
     errno = 0;  // Restore errno back to 0
     return res;
 }

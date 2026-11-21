@@ -118,6 +118,22 @@ impl MountNamespaceManager {
                     // Create a new, private mount namespace for ourselves.
                     unsafe {
                         rustix_thread::unshare_unsafe(rustix_thread::UnshareFlags::NEWNS).unwrap();
+                        // A new namespace still inherits shared mount propagation.
+                        // Do not let cleanup affect its source or accept later
+                        // module mounts into the cached clean view.
+                        if libc::mount(
+                            std::ptr::null(),
+                            c"/".as_ptr(),
+                            std::ptr::null(),
+                            libc::MS_PRIVATE | libc::MS_REC,
+                            std::ptr::null(),
+                        ) == -1
+                        {
+                            panic!(
+                                "make clean mount namespace private: {}",
+                                Error::last_os_error()
+                            );
+                        }
                     }
                     // Unmount all root and module mounts.
                     Self::clean_mount_namespace().unwrap();
